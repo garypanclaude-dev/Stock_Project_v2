@@ -19,6 +19,13 @@
     .card-hover:hover { transform: translateY(-2px); box-shadow: 0 4px 20px #0006; }
     #ticker-input { text-transform: uppercase; letter-spacing: .1em; }
     #ticker-input::placeholder { text-transform: none; letter-spacing: normal; }
+    .period-btn { transition: all .15s; }
+    .period-btn.active { background: #3b82f6; color: white; }
+    .indicator-chip { transition: all .15s; cursor: pointer; user-select: none; }
+    .indicator-chip.active { border-color: #3b82f6; background: rgba(59,130,246,.15); color: #93c5fd; }
+    .fund-label { color: #94a3b8; font-size: 0.75rem; }
+    .fund-value { color: #e2e8f0; font-size: 0.875rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .quarter-bar { transition: width .4s ease; }
   </style>
 </head>
 
@@ -27,8 +34,6 @@
 <!-- ═══ HEADER ═══════════════════════════════════════════════════════════════ -->
 <header class="bg-slate-800/80 backdrop-blur border-b border-slate-700 sticky top-0 z-50">
   <div class="max-w-screen-xl mx-auto px-6 py-3 flex items-center gap-4">
-
-    <!-- Logo -->
     <div class="flex items-center gap-2 mr-2 shrink-0">
       <svg class="w-7 h-7 text-blue-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>
@@ -36,25 +41,21 @@
       <span class="text-lg font-bold tracking-tight">StockInsights</span>
     </div>
 
-    <!-- Ticker input -->
-    <input id="ticker-input" type="text" value="AAPL" maxlength="6" spellcheck="false"
+    <input id="ticker-input" type="text" value="AAPL" maxlength="10" spellcheck="false"
       placeholder="e.g. AAPL"
       class="w-28 bg-slate-900 border border-slate-600 rounded-lg px-3 py-1.5
              text-white font-mono text-base focus:outline-none focus:ring-2
              focus:ring-blue-500 focus:border-transparent transition"
       onkeydown="if(event.key==='Enter') analyze()" />
 
-    <!-- Analyze button -->
     <button onclick="analyze()"
       class="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 px-4 py-1.5
              rounded-lg font-semibold text-sm transition-colors shrink-0">
       分析 ↵
     </button>
 
-    <!-- Spacer -->
     <div class="flex-1"></div>
 
-    <!-- Mock toggle -->
     <label class="flex items-center gap-2 cursor-pointer select-none">
       <span class="text-xs text-slate-400">LIVE</span>
       <div class="relative" onclick="toggleMock()">
@@ -67,7 +68,6 @@
       <span class="text-xs text-slate-400">MOCK</span>
     </label>
 
-    <!-- Mock badge -->
     <span id="mock-badge"
       class="text-xs font-semibold px-2.5 py-1 rounded-full
              bg-amber-500/15 text-amber-400 border border-amber-500/30">
@@ -93,23 +93,29 @@
   </div>
 
   <!-- Dashboard -->
-  <div id="dashboard" class="grid grid-cols-5 gap-5">
+  <div id="dashboard" class="space-y-5">
 
-    <!-- ── LEFT (3/5) ─────────────────────────────────────────────────────── -->
-    <div class="col-span-5 lg:col-span-3 flex flex-col gap-5">
+    <!-- ── ROW 1: Price header + Fundamentals ─────────────────────────────── -->
+    <div class="grid grid-cols-5 gap-5">
 
       <!-- Price header card -->
-      <div id="price-card" class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
+      <div id="price-card" class="col-span-5 lg:col-span-3 bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
         <div class="flex items-start justify-between gap-4">
           <div>
             <div class="flex items-center gap-2 mb-1">
               <span id="h-symbol" class="text-2xl font-extrabold tracking-tight">AAPL</span>
               <span id="h-currency" class="text-xs bg-slate-700 text-slate-400 px-2 py-0.5 rounded-md font-mono">USD</span>
+              <span id="h-sector" class="text-xs bg-slate-700 text-slate-400 px-2 py-0.5 rounded-md"></span>
               <span id="h-mock-tag" class="text-xs bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-md hidden">MOCK</span>
             </div>
             <div class="flex flex-wrap items-baseline gap-3">
               <span id="h-price" class="text-4xl font-extrabold tabular-nums">$302.12</span>
               <span id="h-change" class="text-lg font-semibold text-green-400">+$3.15 (+1.05%)</span>
+            </div>
+            <div class="flex gap-4 mt-2 text-xs text-slate-500">
+              <span>52W High: <strong id="h-52h" class="text-slate-300">–</strong></span>
+              <span>52W Low: <strong id="h-52l" class="text-slate-300">–</strong></span>
+              <span>Beta: <strong id="h-beta" class="text-slate-300">–</strong></span>
             </div>
           </div>
           <div class="text-right shrink-0">
@@ -121,79 +127,154 @@
         </div>
       </div>
 
-      <!-- Chart card -->
-      <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">7-Day Price Chart</h2>
-          <div class="flex items-center gap-4 text-xs text-slate-500">
-            <span class="flex items-center gap-1.5">
-              <span class="inline-block w-3 h-3 rounded-sm bg-green-500"></span>Bullish
-            </span>
-            <span class="flex items-center gap-1.5">
-              <span class="inline-block w-3 h-3 rounded-sm bg-red-500"></span>Bearish
-            </span>
+      <!-- Valuation card -->
+      <div class="col-span-5 lg:col-span-2 bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
+        <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">估值指標</h2>
+        <div class="grid grid-cols-3 gap-x-4 gap-y-3" id="valuation-grid">
+          <!-- filled by JS -->
+        </div>
+      </div>
+    </div>
+
+    <!-- ── ROW 2: Charts + Controls ───────────────────────────────────────── -->
+    <div class="grid grid-cols-5 gap-5">
+
+      <div class="col-span-5 lg:col-span-3 flex flex-col gap-5">
+
+        <!-- Period selector + indicator toggles -->
+        <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700 fade-in">
+          <div class="flex flex-wrap items-center gap-3">
+            <span class="text-xs text-slate-500 font-semibold uppercase mr-1">Period</span>
+            <div id="period-btns" class="flex gap-1.5">
+              <button class="period-btn text-xs px-3 py-1 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600" data-p="1M">1M</button>
+              <button class="period-btn text-xs px-3 py-1 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600 active" data-p="3M">3M</button>
+              <button class="period-btn text-xs px-3 py-1 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600" data-p="6M">6M</button>
+              <button class="period-btn text-xs px-3 py-1 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600" data-p="1Y">1Y</button>
+              <button class="period-btn text-xs px-3 py-1 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600" data-p="YTD">YTD</button>
+            </div>
+
+            <div class="w-px h-5 bg-slate-600 mx-1"></div>
+
+            <span class="text-xs text-slate-500 font-semibold uppercase mr-1">Overlay</span>
+            <div id="overlay-chips" class="flex flex-wrap gap-1.5">
+              <span class="indicator-chip text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400 active" data-key="ma5" style="--c:#f59e0b">MA5</span>
+              <span class="indicator-chip text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400 active" data-key="ma10" style="--c:#3b82f6">MA10</span>
+              <span class="indicator-chip text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400 active" data-key="ma20" style="--c:#a855f7">MA20</span>
+              <span class="indicator-chip text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400" data-key="ma60" style="--c:#ec4899">MA60</span>
+              <span class="indicator-chip text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400" data-key="bb" style="--c:#06b6d4">BB</span>
+            </div>
           </div>
         </div>
-        <!-- Chart container — fixed height so Chart.js respects it -->
-        <div style="position:relative; height:260px">
-          <canvas id="price-chart"></canvas>
+
+        <!-- Candlestick chart -->
+        <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
+          <div style="position:relative; height:280px">
+            <canvas id="price-chart"></canvas>
+          </div>
+          <div style="position:relative; height:48px; margin-top:6px">
+            <canvas id="volume-chart"></canvas>
+          </div>
         </div>
-        <!-- Volume mini bar row -->
-        <div style="position:relative; height:48px; margin-top:6px">
-          <canvas id="volume-chart"></canvas>
+
+        <!-- RSI chart -->
+        <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700 fade-in">
+          <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2">RSI (14)</h2>
+          <div style="position:relative; height:120px">
+            <canvas id="rsi-chart"></canvas>
+          </div>
         </div>
-      </div>
 
-    </div><!-- /left -->
-
-    <!-- ── RIGHT (2/5) ────────────────────────────────────────────────────── -->
-    <div class="col-span-5 lg:col-span-2 flex flex-col gap-5">
-
-      <!-- Sentiment summary card -->
-      <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
-        <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-4">市場情緒</h2>
-        <div id="sentiment-bars" class="space-y-3">
-          <!-- filled by JS -->
+        <!-- MACD chart -->
+        <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700 fade-in">
+          <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2">MACD (12, 26, 9)</h2>
+          <div style="position:relative; height:140px">
+            <canvas id="macd-chart"></canvas>
+          </div>
         </div>
-        <div class="mt-4 pt-4 border-t border-slate-700 flex justify-between text-xs text-slate-500">
-          <span>催化劑篩選後</span>
-          <span id="catalyst-count">0 則</span>
+
+      </div><!-- /left -->
+
+      <!-- ── RIGHT (2/5) ──────────────────────────────────────────────────── -->
+      <div class="col-span-5 lg:col-span-2 flex flex-col gap-5">
+
+        <!-- Profitability card -->
+        <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
+          <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">獲利能力</h2>
+          <div id="profit-grid" class="grid grid-cols-2 gap-x-4 gap-y-3"></div>
         </div>
-      </div>
 
-      <!-- Catalyst cards — independently scrollable -->
-      <div class="flex flex-col gap-3 overflow-y-auto" style="max-height:520px; padding-right:2px">
-        <div id="catalyst-cards">
-          <!-- filled by JS -->
+        <!-- Dividend card -->
+        <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
+          <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">股利資訊</h2>
+          <div id="dividend-grid" class="grid grid-cols-2 gap-x-4 gap-y-3"></div>
         </div>
-      </div>
 
-    </div><!-- /right -->
+        <!-- Quarterly revenue chart -->
+        <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
+          <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">季度營收趨勢</h2>
+          <div id="quarterly-bars" class="space-y-2.5"></div>
+        </div>
 
+        <!-- Sentiment summary card -->
+        <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
+          <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-4">市場情緒</h2>
+          <div id="sentiment-bars" class="space-y-3"></div>
+          <div class="mt-4 pt-4 border-t border-slate-700 flex justify-between text-xs text-slate-500">
+            <span>催化劑篩選後</span>
+            <span id="catalyst-count">0 則</span>
+          </div>
+        </div>
+
+        <!-- Catalyst cards -->
+        <div class="flex flex-col gap-3 overflow-y-auto" style="max-height:520px; padding-right:2px">
+          <div id="catalyst-cards"></div>
+        </div>
+
+      </div><!-- /right -->
+
+    </div><!-- /grid -->
   </div><!-- /dashboard -->
-
 </main>
 
 <!-- ═══ SCRIPT ════════════════════════════════════════════════════════════════ -->
 <script>
 // ── Config ──────────────────────────────────────────────────────────────────
 const SENTIMENT = {
-  Bullish: { label: '↑ Bullish', border: '#22c55e', bg: 'rgba(34,197,94,.15)',
-             text: 'text-green-400', badge: 'bg-green-500/20 text-green-400 border-green-500/30', bar: '#22c55e' },
-  Bearish: { label: '↓ Bearish', border: '#ef4444', bg: 'rgba(239,68,68,.15)',
-             text: 'text-red-400',   badge: 'bg-red-500/20 text-red-400 border-red-500/30',   bar: '#ef4444' },
-  Neutral: { label: '→ Neutral', border: '#f59e0b', bg: 'rgba(245,158,11,.1)',
-             text: 'text-amber-400', badge: 'bg-amber-500/20 text-amber-400 border-amber-500/30', bar: '#f59e0b' },
+  Bullish: { label: '↑ Bullish', border: '#22c55e', bg: 'rgba(34,197,94,.15)', text: 'text-green-400', badge: 'bg-green-500/20 text-green-400 border-green-500/30', bar: '#22c55e' },
+  Bearish: { label: '↓ Bearish', border: '#ef4444', bg: 'rgba(239,68,68,.15)', text: 'text-red-400', badge: 'bg-red-500/20 text-red-400 border-red-500/30', bar: '#ef4444' },
+  Neutral: { label: '→ Neutral', border: '#f59e0b', bg: 'rgba(245,158,11,.1)', text: 'text-amber-400', badge: 'bg-amber-500/20 text-amber-400 border-amber-500/30', bar: '#f59e0b' },
 };
-const CATALYST_ICON = {
-  earnings: '📊', analyst_rating: '📈', regulation: '⚖️', product_launch: '🚀',
-  m_and_a: '🤝', management: '👔', litigation: '⚠️', macro: '🌍',
-};
+const CATALYST_ICON = { earnings:'📊', analyst_rating:'📈', regulation:'⚖️', product_launch:'🚀', m_and_a:'🤝', management:'👔', litigation:'⚠️', macro:'🌍' };
+
+const MA_COLORS = { ma5: '#f59e0b', ma10: '#3b82f6', ma20: '#a855f7', ma60: '#ec4899' };
+const BB_COLOR = '#06b6d4';
 
 // ── State ────────────────────────────────────────────────────────────────────
 let isMock = true;
-let priceChart = null;
-let volumeChart = null;
+let currentPeriod = '3M';
+let currentData = null;
+let priceChart = null, volumeChart = null, rsiChart = null, macdChart = null;
+
+let activeOverlays = new Set(['ma5','ma10','ma20']);
+
+// ── Period + overlay controls ────────────────────────────────────────────────
+document.getElementById('period-btns').addEventListener('click', e => {
+  const btn = e.target.closest('[data-p]');
+  if (!btn || btn.dataset.p === currentPeriod) return;
+  document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentPeriod = btn.dataset.p;
+  analyze();
+});
+
+document.getElementById('overlay-chips').addEventListener('click', e => {
+  const chip = e.target.closest('.indicator-chip');
+  if (!chip) return;
+  const key = chip.dataset.key;
+  chip.classList.toggle('active');
+  if (activeOverlays.has(key)) activeOverlays.delete(key); else activeOverlays.add(key);
+  if (currentData) { renderCandlestick(currentData.kline, currentData.indicators); renderVolume(currentData.kline); }
+});
 
 // ── Mock toggle ──────────────────────────────────────────────────────────────
 function toggleMock() {
@@ -203,39 +284,33 @@ function toggleMock() {
   document.getElementById('toggle-dot').className =
     `absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${isMock ? 'translate-x-5' : 'translate-x-0'}`;
   document.getElementById('mock-badge').className =
-    `text-xs font-semibold px-2.5 py-1 rounded-full border ${isMock
-      ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
-      : 'bg-slate-700 text-slate-500 border-slate-600'}`;
+    `text-xs font-semibold px-2.5 py-1 rounded-full border ${isMock ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' : 'bg-slate-700 text-slate-500 border-slate-600'}`;
   document.getElementById('mock-badge').textContent = isMock ? 'MOCK' : 'LIVE';
 }
 
 // ── UI state helpers ─────────────────────────────────────────────────────────
-function showState(state) { // 'loading' | 'error' | 'dashboard'
+function showState(state) {
   ['loading','error','dashboard'].forEach(s => {
     const el = document.getElementById(`state-${s}`) || document.getElementById(s);
-    if (el) el.classList.add('hidden');
+    if (el) { el.classList.add('hidden'); el.classList.remove('flex'); }
   });
   const el = document.getElementById(`state-${state}`) || document.getElementById(state);
-  if (el) {
-    el.classList.remove('hidden');
-    if (state !== 'loading') el.classList.add('flex');
-  }
+  if (el) { el.classList.remove('hidden'); if (state !== 'loading') el.classList.add('flex'); }
 }
 
 // ── API ──────────────────────────────────────────────────────────────────────
 async function analyze() {
   const ticker = document.getElementById('ticker-input').value.trim().toUpperCase();
   if (!ticker) return;
-
   showState('loading');
   try {
-    const res = await fetch(`/api/stock-insights?ticker=${ticker}&mock=${isMock}`);
+    const res = await fetch(`/api/stock-insights?ticker=${ticker}&period=${currentPeriod}&mock=${isMock}`);
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(err.detail || res.statusText);
     }
-    const data = await res.json();
-    renderDashboard(data);
+    currentData = await res.json();
+    renderDashboard(currentData);
     showState('dashboard');
   } catch (e) {
     document.getElementById('error-msg').textContent = `Error: ${e.message}`;
@@ -244,207 +319,352 @@ async function analyze() {
 }
 
 // ── Render: dashboard ────────────────────────────────────────────────────────
-function renderDashboard(data) {
-  renderPriceHeader(data.latest_quote, data.is_mock);
-  renderCandlestick(data.kline_7d);
-  renderVolume(data.kline_7d);
-  renderSentiment(data.sentiment_summary);
-  renderCatalysts(data.catalysts);
-  document.getElementById('catalyst-count').textContent =
-    `${data.sentiment_summary.total} 則`;
+function renderDashboard(d) {
+  renderPriceHeader(d.latest_quote, d.is_mock, d.fundamentals);
+  renderCandlestick(d.kline, d.indicators);
+  renderVolume(d.kline);
+  renderRSI(d.kline, d.indicators);
+  renderMACD(d.kline, d.indicators);
+  renderValuation(d.fundamentals);
+  renderProfitability(d.fundamentals);
+  renderDividend(d.fundamentals);
+  renderQuarterly(d.fundamentals);
+  renderSentiment(d.sentiment_summary);
+  renderCatalysts(d.catalysts);
+  document.getElementById('catalyst-count').textContent = `${d.sentiment_summary.total} 則`;
 }
 
-// ── Render: price header ──────────────────────────────────────────────────────
-function renderPriceHeader(q, isMockData) {
+// ── Render: price header ─────────────────────────────────────────────────────
+function renderPriceHeader(q, isMockData, fund) {
   document.getElementById('h-symbol').textContent = q.symbol;
   document.getElementById('h-currency').textContent = q.currency || 'USD';
   document.getElementById('h-price').textContent = `$${q.current_price.toFixed(2)}`;
   document.getElementById('h-prev').textContent = `$${q.previous_close.toFixed(2)}`;
 
   const diff = q.current_price - q.previous_close;
-  const pct  = (diff / q.previous_close) * 100;
+  const pct = (diff / q.previous_close) * 100;
   const sign = diff >= 0 ? '+' : '';
-  const el   = document.getElementById('h-change');
+  const el = document.getElementById('h-change');
   el.textContent = `${sign}$${diff.toFixed(2)} (${sign}${pct.toFixed(2)}%)`;
   el.className = `text-lg font-semibold ${diff >= 0 ? 'text-green-400' : 'text-red-400'}`;
 
   document.getElementById('h-mcap').textContent = fmtCap(q.market_cap);
   document.getElementById('h-mock-tag').classList.toggle('hidden', !isMockData);
+
+  if (fund && fund.summary) {
+    document.getElementById('h-sector').textContent = fund.summary.sector || '';
+    document.getElementById('h-52h').textContent = fund.summary.fifty_two_week_high ? `$${fund.summary.fifty_two_week_high}` : '–';
+    document.getElementById('h-52l').textContent = fund.summary.fifty_two_week_low ? `$${fund.summary.fifty_two_week_low}` : '–';
+    document.getElementById('h-beta').textContent = fund.summary.beta ?? '–';
+  }
 }
 
-// ── Render: candlestick chart ─────────────────────────────────────────────────
+// ── Render: candlestick + MA/BB overlays ─────────────────────────────────────
 const CandlestickPlugin = {
   id: 'candlestick',
   afterDatasetsDraw(chart) {
-    const { ctx, scales: { x, y }, data } = chart;
+    const { ctx, scales: { x, y } } = chart;
     const klines = chart._klines;
     if (!klines) return;
     const meta = chart.getDatasetMeta(0);
-
     meta.data.forEach((bar, i) => {
       const k = klines[i];
       if (!k || bar.x == null) return;
-
-      const xc   = bar.x;
+      const xc = bar.x;
       const highY = y.getPixelForValue(k.high);
-      const lowY  = y.getPixelForValue(k.low);
+      const lowY = y.getPixelForValue(k.low);
       const openY = y.getPixelForValue(k.open);
-      const closeY= y.getPixelForValue(k.close);
-      const bull  = k.close >= k.open;
+      const closeY = y.getPixelForValue(k.close);
+      const bull = k.close >= k.open;
       const color = bull ? '#22c55e' : '#ef4444';
-      const hw    = 7; // half-width of body in px
-
+      const hw = Math.max(3, Math.min(7, Math.round(chart.width / klines.length * 0.3)));
       ctx.save();
-      // Wick
-      ctx.beginPath();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
-      ctx.moveTo(xc, highY);
-      ctx.lineTo(xc, lowY);
-      ctx.stroke();
-      // Body
+      ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+      ctx.moveTo(xc, highY); ctx.lineTo(xc, lowY); ctx.stroke();
       const by = Math.min(openY, closeY);
       const bh = Math.max(Math.abs(openY - closeY), 2);
       ctx.fillStyle = bull ? 'rgba(34,197,94,.75)' : 'rgba(239,68,68,.9)';
       ctx.fillRect(xc - hw, by, hw * 2, bh);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = color; ctx.lineWidth = 1;
       ctx.strokeRect(xc - hw, by, hw * 2, bh);
       ctx.restore();
     });
   }
 };
 
-function renderCandlestick(klines) {
+function renderCandlestick(klines, indicators) {
   if (priceChart) priceChart.destroy();
   const ctx = document.getElementById('price-chart').getContext('2d');
-  const lo  = Math.min(...klines.map(k => k.low));
-  const hi  = Math.max(...klines.map(k => k.high));
+  const lo = Math.min(...klines.map(k => k.low));
+  const hi = Math.max(...klines.map(k => k.high));
   const pad = (hi - lo) * 0.12;
+
+  // Thin labels for big datasets
+  const labels = klines.map((k, i) => {
+    if (klines.length > 120) return i % 20 === 0 ? k.date.slice(5) : '';
+    if (klines.length > 60) return i % 10 === 0 ? k.date.slice(5) : '';
+    if (klines.length > 30) return i % 5 === 0 ? k.date.slice(5) : '';
+    return k.date.slice(5);
+  });
+
+  const datasets = [{
+    data: klines.map(k => [k.low, k.high]),
+    backgroundColor: 'transparent', borderColor: 'transparent',
+  }];
+
+  // MA overlays
+  if (indicators && indicators.ma) {
+    for (const [key, color] of Object.entries(MA_COLORS)) {
+      if (activeOverlays.has(key) && indicators.ma[key]) {
+        datasets.push({
+          type: 'line', label: key.toUpperCase(),
+          data: indicators.ma[key],
+          borderColor: color, borderWidth: 1.5,
+          pointRadius: 0, tension: 0.3, spanGaps: true,
+        });
+      }
+    }
+  }
+
+  // Bollinger bands
+  if (activeOverlays.has('bb') && indicators && indicators.bollinger) {
+    datasets.push({
+      type: 'line', label: 'BB Upper',
+      data: indicators.bollinger.upper,
+      borderColor: BB_COLOR, borderWidth: 1, borderDash: [4, 3],
+      pointRadius: 0, tension: 0.3, spanGaps: true, fill: false,
+    });
+    datasets.push({
+      type: 'line', label: 'BB Lower',
+      data: indicators.bollinger.lower,
+      borderColor: BB_COLOR, borderWidth: 1, borderDash: [4, 3],
+      pointRadius: 0, tension: 0.3, spanGaps: true,
+      fill: '-1', backgroundColor: 'rgba(6,182,212,.06)',
+    });
+  }
 
   priceChart = new Chart(ctx, {
     type: 'bar',
-    data: {
-      labels: klines.map(k => k.date.slice(5)), // MM-DD
-      datasets: [{
-        // Invisible floating bars to anchor y-scale
-        data: klines.map(k => [k.low, k.high]),
-        backgroundColor: 'transparent',
-        borderColor: 'transparent',
-      }],
-    },
+    data: { labels, datasets },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: { duration: 400 },
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 300 },
       scales: {
-        x: {
-          grid: { color: '#1e293b' },
-          ticks: { color: '#64748b', font: { size: 11 } },
-          border: { color: '#334155' },
-        },
-        y: {
-          position: 'right',
-          min: lo - pad,
-          max: hi + pad,
-          grid: { color: '#1e293b80' },
-          ticks: {
-            color: '#64748b', font: { size: 11 },
-            callback: v => '$' + v.toFixed(1),
-          },
-          border: { color: '#334155' },
-        },
+        x: { grid: { color: '#1e293b' }, ticks: { color: '#64748b', font: { size: 10 }, maxRotation: 0 }, border: { color: '#334155' } },
+        y: { position: 'right', min: lo - pad, max: hi + pad, grid: { color: '#1e293b80' }, ticks: { color: '#64748b', font: { size: 11 }, callback: v => '$' + v.toFixed(1) }, border: { color: '#334155' } },
       },
       plugins: {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            title: items => klines[items[0].dataIndex].date,
+            title: items => klines[items[0].dataIndex]?.date || '',
             label: item => {
-              const k = klines[item.dataIndex];
-              return [
-                `  Open   $${k.open.toFixed(2)}`,
-                `  High   $${k.high.toFixed(2)}`,
-                `  Low    $${k.low.toFixed(2)}`,
-                `  Close  $${k.close.toFixed(2)}`,
-              ];
-            },
-            labelColor: item => {
-              const k = klines[item.dataIndex];
-              const c = k.close >= k.open ? '#22c55e' : '#ef4444';
-              return { borderColor: c, backgroundColor: c };
+              if (item.datasetIndex === 0) {
+                const k = klines[item.dataIndex];
+                return [`  Open  $${k.open.toFixed(2)}`, `  High  $${k.high.toFixed(2)}`, `  Low   $${k.low.toFixed(2)}`, `  Close $${k.close.toFixed(2)}`];
+              }
+              return `  ${item.dataset.label}: $${item.raw?.toFixed(2) ?? '–'}`;
             },
           },
-          backgroundColor: '#0f172a',
-          borderColor: '#334155',
-          borderWidth: 1,
-          titleColor: '#f1f5f9',
-          bodyColor: '#94a3b8',
-          padding: 10,
-          displayColors: true,
-          boxWidth: 10,
-          boxHeight: 10,
+          backgroundColor: '#0f172a', borderColor: '#334155', borderWidth: 1,
+          titleColor: '#f1f5f9', bodyColor: '#94a3b8', padding: 10,
         },
       },
     },
     plugins: [CandlestickPlugin],
   });
-  priceChart._klines = klines; // attach for plugin
+  priceChart._klines = klines;
 }
 
-// ── Render: volume bars ───────────────────────────────────────────────────────
+// ── Render: volume bars ──────────────────────────────────────────────────────
 function renderVolume(klines) {
   if (volumeChart) volumeChart.destroy();
   const ctx = document.getElementById('volume-chart').getContext('2d');
-  const colors = klines.map(k =>
-    k.close >= k.open ? 'rgba(34,197,94,.45)' : 'rgba(239,68,68,.45)');
-
+  const colors = klines.map(k => k.close >= k.open ? 'rgba(34,197,94,.45)' : 'rgba(239,68,68,.45)');
   volumeChart = new Chart(ctx, {
     type: 'bar',
+    data: { labels: klines.map(() => ''), datasets: [{ data: klines.map(k => k.volume), backgroundColor: colors, borderWidth: 0 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
+      scales: { x: { display: false }, y: { display: true, position: 'right', ticks: { color: '#475569', font: { size: 9 }, callback: v => fmtVol(v) }, grid: { display: false }, border: { display: false } } },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: item => `  Volume  ${fmtVol(item.raw)}` }, backgroundColor: '#0f172a', borderColor: '#334155', borderWidth: 1, titleColor: '#f1f5f9', bodyColor: '#94a3b8', padding: 10 } },
+    },
+  });
+}
+
+// ── Render: RSI ──────────────────────────────────────────────────────────────
+function renderRSI(klines, indicators) {
+  if (rsiChart) rsiChart.destroy();
+  if (!indicators || !indicators.rsi) return;
+  const ctx = document.getElementById('rsi-chart').getContext('2d');
+  const labels = klines.map((k, i) => {
+    if (klines.length > 120) return i % 20 === 0 ? k.date.slice(5) : '';
+    if (klines.length > 60) return i % 10 === 0 ? k.date.slice(5) : '';
+    if (klines.length > 30) return i % 5 === 0 ? k.date.slice(5) : '';
+    return k.date.slice(5);
+  });
+
+  rsiChart = new Chart(ctx, {
+    type: 'line',
     data: {
-      labels: klines.map(k => k.date.slice(5)),
-      datasets: [{ data: klines.map(k => k.volume), backgroundColor: colors, borderWidth: 0 }],
+      labels,
+      datasets: [{
+        data: indicators.rsi, borderColor: '#a855f7', borderWidth: 1.5,
+        pointRadius: 0, tension: 0.3, spanGaps: true, fill: false,
+      }],
     },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: { duration: 400 },
+      responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
       scales: {
-        x: { display: false },
+        x: { grid: { color: '#1e293b' }, ticks: { color: '#64748b', font: { size: 9 }, maxRotation: 0 }, border: { color: '#334155' } },
         y: {
-          display: true,
-          position: 'right',
-          ticks: { color: '#475569', font: { size: 9 }, callback: v => fmtVol(v) },
-          grid: { display: false },
-          border: { display: false },
+          position: 'right', min: 0, max: 100,
+          grid: { color: (ctx) => [30, 70].includes(ctx.tick.value) ? '#475569' : '#1e293b40' },
+          ticks: { color: '#64748b', font: { size: 10 }, stepSize: 10 },
+          border: { color: '#334155' },
         },
       },
       plugins: {
         legend: { display: false },
-        tooltip: {
-          callbacks: {
-            title: items => klines[items[0].dataIndex].date,
-            label: item => `  Volume  ${fmtVol(item.raw)}`,
-          },
-          backgroundColor: '#0f172a',
-          borderColor: '#334155',
-          borderWidth: 1,
-          titleColor: '#f1f5f9',
-          bodyColor: '#94a3b8',
-          padding: 10,
-        },
+        tooltip: { callbacks: { label: item => `  RSI: ${item.raw?.toFixed(1) ?? '–'}` }, backgroundColor: '#0f172a', borderColor: '#334155', borderWidth: 1, bodyColor: '#94a3b8', padding: 8 },
+        annotation: undefined,
+      },
+    },
+    plugins: [{
+      id: 'rsi-zones',
+      beforeDatasetsDraw(chart) {
+        const { ctx, chartArea: { left, right }, scales: { y } } = chart;
+        // Overbought zone
+        ctx.save();
+        ctx.fillStyle = 'rgba(239,68,68,.06)';
+        ctx.fillRect(left, y.getPixelForValue(100), right - left, y.getPixelForValue(70) - y.getPixelForValue(100));
+        // Oversold zone
+        ctx.fillStyle = 'rgba(34,197,94,.06)';
+        ctx.fillRect(left, y.getPixelForValue(30), right - left, y.getPixelForValue(0) - y.getPixelForValue(30));
+        ctx.restore();
+      }
+    }],
+  });
+}
+
+// ── Render: MACD ─────────────────────────────────────────────────────────────
+function renderMACD(klines, indicators) {
+  if (macdChart) macdChart.destroy();
+  if (!indicators || !indicators.macd) return;
+  const ctx = document.getElementById('macd-chart').getContext('2d');
+  const labels = klines.map((k, i) => {
+    if (klines.length > 120) return i % 20 === 0 ? k.date.slice(5) : '';
+    if (klines.length > 60) return i % 10 === 0 ? k.date.slice(5) : '';
+    if (klines.length > 30) return i % 5 === 0 ? k.date.slice(5) : '';
+    return k.date.slice(5);
+  });
+
+  const hist = indicators.macd.histogram || [];
+  const histColors = hist.map(v => v === null ? 'transparent' : v >= 0 ? 'rgba(34,197,94,.6)' : 'rgba(239,68,68,.6)');
+
+  macdChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { data: hist.map(v => v ?? 0), backgroundColor: histColors, borderWidth: 0, order: 2 },
+        { type: 'line', label: 'MACD', data: indicators.macd.macd, borderColor: '#3b82f6', borderWidth: 1.5, pointRadius: 0, tension: 0.3, spanGaps: true, order: 1 },
+        { type: 'line', label: 'Signal', data: indicators.macd.signal, borderColor: '#f59e0b', borderWidth: 1.5, pointRadius: 0, tension: 0.3, spanGaps: true, order: 1 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
+      scales: {
+        x: { grid: { color: '#1e293b' }, ticks: { color: '#64748b', font: { size: 9 }, maxRotation: 0 }, border: { color: '#334155' } },
+        y: { position: 'right', grid: { color: '#1e293b80' }, ticks: { color: '#64748b', font: { size: 10 } }, border: { color: '#334155' } },
+      },
+      plugins: {
+        legend: { display: true, position: 'top', align: 'end', labels: { color: '#94a3b8', boxWidth: 10, boxHeight: 10, font: { size: 10 }, usePointStyle: true, padding: 12, filter: item => item.datasetIndex > 0 } },
+        tooltip: { backgroundColor: '#0f172a', borderColor: '#334155', borderWidth: 1, bodyColor: '#94a3b8', padding: 8 },
       },
     },
   });
 }
 
-// ── Render: sentiment bars ────────────────────────────────────────────────────
+// ── Render: valuation grid ───────────────────────────────────────────────────
+function renderValuation(fund) {
+  if (!fund) return;
+  const v = fund.valuation || {};
+  const ps = fund.per_share || {};
+  const items = [
+    ['P/E (TTM)', v.pe_ratio], ['Forward P/E', v.forward_pe], ['P/B', v.pb_ratio],
+    ['P/S', v.ps_ratio], ['PEG', v.peg_ratio], ['EPS (TTM)', ps.eps_ttm ? `$${ps.eps_ttm}` : null],
+    ['EPS (Fwd)', ps.eps_forward ? `$${ps.eps_forward}` : null], ['Book Value', ps.book_value ? `$${ps.book_value}` : null], ['Rev/Share', ps.revenue_per_share ? `$${ps.revenue_per_share}` : null],
+  ];
+  document.getElementById('valuation-grid').innerHTML = items.map(([label, val]) =>
+    `<div><div class="fund-label">${label}</div><div class="fund-value">${val ?? '–'}</div></div>`
+  ).join('');
+}
+
+// ── Render: profitability ────────────────────────────────────────────────────
+function renderProfitability(fund) {
+  if (!fund) return;
+  const p = fund.profitability || {};
+  const items = [
+    ['ROE', p.roe, '%'], ['ROA', p.roa, '%'],
+    ['Profit Margin', p.profit_margin, '%'], ['Gross Margin', p.gross_margin, '%'],
+    ['Operating Margin', p.operating_margin, '%'],
+  ];
+  document.getElementById('profit-grid').innerHTML = items.map(([label, val, suffix]) => {
+    const display = val != null ? `${val}${suffix}` : '–';
+    const color = val != null ? (val >= 20 ? 'text-green-400' : val >= 10 ? 'text-amber-400' : 'text-red-400') : '';
+    return `<div><div class="fund-label">${label}</div><div class="fund-value ${color}">${display}</div></div>`;
+  }).join('');
+}
+
+// ── Render: dividend ─────────────────────────────────────────────────────────
+function renderDividend(fund) {
+  if (!fund) return;
+  const d = fund.dividend || {};
+  const items = [
+    ['Yield', d.dividend_yield != null ? `${d.dividend_yield}%` : null],
+    ['Annual Rate', d.dividend_rate != null ? `$${d.dividend_rate}` : null],
+    ['Payout Ratio', d.payout_ratio != null ? `${d.payout_ratio}%` : null],
+    ['Ex-Div Date', d.ex_dividend_date],
+  ];
+  document.getElementById('dividend-grid').innerHTML = items.map(([label, val]) =>
+    `<div><div class="fund-label">${label}</div><div class="fund-value">${val ?? '–'}</div></div>`
+  ).join('');
+}
+
+// ── Render: quarterly revenue bars ───────────────────────────────────────────
+function renderQuarterly(fund) {
+  const el = document.getElementById('quarterly-bars');
+  if (!fund || !fund.quarterly_financials || !fund.quarterly_financials.length) {
+    el.innerHTML = '<div class="text-slate-500 text-sm text-center py-4">無季度數據</div>';
+    return;
+  }
+  const quarters = [...fund.quarterly_financials].reverse();
+  const maxRev = Math.max(...quarters.map(q => q.revenue || 0));
+
+  el.innerHTML = quarters.map(q => {
+    const rev = q.revenue || 0;
+    const ni = q.net_income || 0;
+    const pct = maxRev > 0 ? (rev / maxRev * 100) : 0;
+    const margin = rev > 0 ? (ni / rev * 100).toFixed(1) : '–';
+    return `
+      <div>
+        <div class="flex justify-between text-xs mb-1">
+          <span class="text-slate-400">${q.period}</span>
+          <span class="text-slate-200 font-semibold tabular-nums">${fmtCap(rev)} <span class="text-slate-500 font-normal">/ ${margin}% margin</span></span>
+        </div>
+        <div class="h-2 rounded-full bg-slate-700 overflow-hidden">
+          <div class="quarter-bar h-2 rounded-full bg-blue-500" style="width:${pct}%"></div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// ── Render: sentiment bars ───────────────────────────────────────────────────
 function renderSentiment(ss) {
   const total = ss.total || 1;
-  const html  = [
-    ['Bullish', ss.bullish],
-    ['Bearish', ss.bearish],
-    ['Neutral', ss.neutral],
+  document.getElementById('sentiment-bars').innerHTML = [
+    ['Bullish', ss.bullish], ['Bearish', ss.bearish], ['Neutral', ss.neutral],
   ].map(([key, count]) => {
     const cfg = SENTIMENT[key];
     const pct = Math.round((count / total) * 100);
@@ -455,68 +675,48 @@ function renderSentiment(ss) {
           <span class="text-slate-300 text-sm font-bold tabular-nums">${count} <span class="text-slate-500 font-normal">/ ${ss.total}</span></span>
         </div>
         <div class="h-2 rounded-full bg-slate-700 overflow-hidden">
-          <div class="h-2 rounded-full transition-all duration-500"
-               style="width:${ss.total ? pct : 0}%;background:${cfg.bar}"></div>
+          <div class="h-2 rounded-full transition-all duration-500" style="width:${ss.total ? pct : 0}%;background:${cfg.bar}"></div>
         </div>
       </div>`;
   }).join('');
-  document.getElementById('sentiment-bars').innerHTML = html;
 }
 
-// ── Render: catalyst cards ────────────────────────────────────────────────────
+// ── Render: catalyst cards ───────────────────────────────────────────────────
 function renderCatalysts(catalysts) {
   if (!catalysts || !catalysts.length) {
-    document.getElementById('catalyst-cards').innerHTML = `
-      <div class="text-slate-500 text-sm text-center py-10">
-        無催化劑新聞
-      </div>`;
+    document.getElementById('catalyst-cards').innerHTML = '<div class="text-slate-500 text-sm text-center py-10">無催化劑新聞</div>';
     return;
   }
-
-  const html = catalysts.map(c => {
-    const cfg  = SENTIMENT[c.sentiment] || SENTIMENT.Neutral;
+  document.getElementById('catalyst-cards').innerHTML = catalysts.map(c => {
+    const cfg = SENTIMENT[c.sentiment] || SENTIMENT.Neutral;
     const icon = CATALYST_ICON[c.catalyst_type] || '📰';
     const date = c.published ? c.published.slice(0, 10) : '';
     return `
-      <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700
-                  card-hover fade-in cursor-default"
-           style="border-left: 3px solid ${cfg.border}">
-        <!-- Top row -->
+      <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700 card-hover fade-in cursor-default mb-3" style="border-left: 3px solid ${cfg.border}">
         <div class="flex items-start justify-between gap-2 mb-2">
           <span class="text-xs text-slate-400 flex items-center gap-1.5 min-w-0">
             <span class="shrink-0">${icon}</span>
             <span class="truncate">${c.catalyst_type.replace('_',' ')} · ${c.source}</span>
           </span>
-          <span class="shrink-0 text-xs font-bold px-2 py-0.5 rounded-full border
-                       ${cfg.badge}">
-            ${cfg.label}
-          </span>
+          <span class="shrink-0 text-xs font-bold px-2 py-0.5 rounded-full border ${cfg.badge}">${cfg.label}</span>
         </div>
-        <!-- Title -->
-        <h3 class="text-sm font-semibold text-slate-100 mb-2 leading-snug line-clamp-2">
-          ${escHtml(c.original_title)}
-        </h3>
-        <!-- Summary -->
+        <h3 class="text-sm font-semibold text-slate-100 mb-2 leading-snug line-clamp-2">${escHtml(c.original_title)}</h3>
         <p class="text-sm text-slate-300 leading-relaxed">${escHtml(c.summary)}</p>
-        <!-- Footer -->
         <div class="mt-3 flex items-center justify-between text-xs text-slate-500">
           <span>${date}</span>
-          <a href="${c.link}" target="_blank" rel="noopener"
-             class="hover:text-blue-400 transition-colors">
-            閱讀原文 →
-          </a>
+          <a href="${c.link}" target="_blank" rel="noopener" class="hover:text-blue-400 transition-colors">閱讀原文 →</a>
         </div>
       </div>`;
   }).join('');
-  document.getElementById('catalyst-cards').innerHTML = html;
 }
 
-// ── Utilities ─────────────────────────────────────────────────────────────────
+// ── Utilities ────────────────────────────────────────────────────────────────
 function fmtCap(n) {
   if (!n) return '–';
   if (n >= 1e12) return `$${(n/1e12).toFixed(2)}T`;
-  if (n >= 1e9)  return `$${(n/1e9).toFixed(2)}B`;
-  return `$${(n/1e6).toFixed(0)}M`;
+  if (n >= 1e9) return `$${(n/1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `$${(n/1e6).toFixed(0)}M`;
+  return `$${n.toLocaleString()}`;
 }
 function fmtVol(v) {
   if (v >= 1e6) return (v/1e6).toFixed(1)+'M';
@@ -527,10 +727,10 @@ function escHtml(s) {
   return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
+// ── Boot ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  showState('dashboard'); // show the skeleton first
-  analyze();              // auto-load AAPL mock data
+  showState('dashboard');
+  analyze();
 });
 </script>
 
