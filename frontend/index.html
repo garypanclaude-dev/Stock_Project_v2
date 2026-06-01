@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stock Insights</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root { font-family: system-ui, -apple-system, sans-serif; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: #1e293b; }
+    ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+    .fade-in { animation: fadeIn 0.3s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .spin { animation: spin 0.9s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .card-hover { transition: transform .15s, box-shadow .15s; }
+    .card-hover:hover { transform: translateY(-2px); box-shadow: 0 4px 20px #0006; }
+    #ticker-input { text-transform: uppercase; letter-spacing: .1em; }
+    #ticker-input::placeholder { text-transform: none; letter-spacing: normal; }
+  </style>
+</head>
+
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col">
+
+<!-- ═══ HEADER ═══════════════════════════════════════════════════════════════ -->
+<header class="bg-slate-800/80 backdrop-blur border-b border-slate-700 sticky top-0 z-50">
+  <div class="max-w-screen-xl mx-auto px-6 py-3 flex items-center gap-4">
+
+    <!-- Logo -->
+    <div class="flex items-center gap-2 mr-2 shrink-0">
+      <svg class="w-7 h-7 text-blue-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>
+      </svg>
+      <span class="text-lg font-bold tracking-tight">StockInsights</span>
+    </div>
+
+    <!-- Ticker input -->
+    <input id="ticker-input" type="text" value="AAPL" maxlength="6" spellcheck="false"
+      placeholder="e.g. AAPL"
+      class="w-28 bg-slate-900 border border-slate-600 rounded-lg px-3 py-1.5
+             text-white font-mono text-base focus:outline-none focus:ring-2
+             focus:ring-blue-500 focus:border-transparent transition"
+      onkeydown="if(event.key==='Enter') analyze()" />
+
+    <!-- Analyze button -->
+    <button onclick="analyze()"
+      class="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 px-4 py-1.5
+             rounded-lg font-semibold text-sm transition-colors shrink-0">
+      分析 ↵
+    </button>
+
+    <!-- Spacer -->
+    <div class="flex-1"></div>
+
+    <!-- Mock toggle -->
+    <label class="flex items-center gap-2 cursor-pointer select-none">
+      <span class="text-xs text-slate-400">LIVE</span>
+      <div class="relative" onclick="toggleMock()">
+        <div id="toggle-track"
+          class="w-10 h-5 rounded-full transition-colors duration-200 bg-amber-500"></div>
+        <div id="toggle-dot"
+          class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow
+                 transition-transform duration-200 translate-x-5"></div>
+      </div>
+      <span class="text-xs text-slate-400">MOCK</span>
+    </label>
+
+    <!-- Mock badge -->
+    <span id="mock-badge"
+      class="text-xs font-semibold px-2.5 py-1 rounded-full
+             bg-amber-500/15 text-amber-400 border border-amber-500/30">
+      MOCK
+    </span>
+  </div>
+</header>
+
+<!-- ═══ MAIN ═══════════════════════════════════════════════════════════════════ -->
+<main class="flex-1 max-w-screen-xl mx-auto w-full px-6 py-6">
+
+  <!-- Loading -->
+  <div id="state-loading" class="hidden flex-col items-center justify-center h-72 gap-4">
+    <div class="spin w-10 h-10 rounded-full border-4 border-blue-500 border-t-transparent"></div>
+    <p class="text-slate-400 text-sm">Fetching market data…</p>
+  </div>
+
+  <!-- Error -->
+  <div id="state-error"
+    class="hidden bg-red-950/40 border border-red-500/30 rounded-2xl p-8 text-center mt-10">
+    <p class="text-4xl mb-3">⚠️</p>
+    <p id="error-msg" class="text-red-400 font-medium"></p>
+  </div>
+
+  <!-- Dashboard -->
+  <div id="dashboard" class="grid grid-cols-5 gap-5">
+
+    <!-- ── LEFT (3/5) ─────────────────────────────────────────────────────── -->
+    <div class="col-span-5 lg:col-span-3 flex flex-col gap-5">
+
+      <!-- Price header card -->
+      <div id="price-card" class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <div class="flex items-center gap-2 mb-1">
+              <span id="h-symbol" class="text-2xl font-extrabold tracking-tight">AAPL</span>
+              <span id="h-currency" class="text-xs bg-slate-700 text-slate-400 px-2 py-0.5 rounded-md font-mono">USD</span>
+              <span id="h-mock-tag" class="text-xs bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-md hidden">MOCK</span>
+            </div>
+            <div class="flex flex-wrap items-baseline gap-3">
+              <span id="h-price" class="text-4xl font-extrabold tabular-nums">$302.12</span>
+              <span id="h-change" class="text-lg font-semibold text-green-400">+$3.15 (+1.05%)</span>
+            </div>
+          </div>
+          <div class="text-right shrink-0">
+            <div class="text-xs text-slate-500 mb-0.5">Market Cap</div>
+            <div id="h-mcap" class="text-sm font-bold text-slate-200">$4.44T</div>
+            <div class="text-xs text-slate-500 mt-2">Prev. Close</div>
+            <div id="h-prev" class="text-sm font-medium text-slate-300">$298.97</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Chart card -->
+      <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">7-Day Price Chart</h2>
+          <div class="flex items-center gap-4 text-xs text-slate-500">
+            <span class="flex items-center gap-1.5">
+              <span class="inline-block w-3 h-3 rounded-sm bg-green-500"></span>Bullish
+            </span>
+            <span class="flex items-center gap-1.5">
+              <span class="inline-block w-3 h-3 rounded-sm bg-red-500"></span>Bearish
+            </span>
+          </div>
+        </div>
+        <!-- Chart container — fixed height so Chart.js respects it -->
+        <div style="position:relative; height:260px">
+          <canvas id="price-chart"></canvas>
+        </div>
+        <!-- Volume mini bar row -->
+        <div style="position:relative; height:48px; margin-top:6px">
+          <canvas id="volume-chart"></canvas>
+        </div>
+      </div>
+
+    </div><!-- /left -->
+
+    <!-- ── RIGHT (2/5) ────────────────────────────────────────────────────── -->
+    <div class="col-span-5 lg:col-span-2 flex flex-col gap-5">
+
+      <!-- Sentiment summary card -->
+      <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
+        <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-4">市場情緒</h2>
+        <div id="sentiment-bars" class="space-y-3">
+          <!-- filled by JS -->
+        </div>
+        <div class="mt-4 pt-4 border-t border-slate-700 flex justify-between text-xs text-slate-500">
+          <span>催化劑篩選後</span>
+          <span id="catalyst-count">0 則</span>
+        </div>
+      </div>
+
+      <!-- Catalyst cards — independently scrollable -->
+      <div class="flex flex-col gap-3 overflow-y-auto" style="max-height:520px; padding-right:2px">
+        <div id="catalyst-cards">
+          <!-- filled by JS -->
+        </div>
+      </div>
+
+    </div><!-- /right -->
+
+  </div><!-- /dashboard -->
+
+</main>
+
+<!-- ═══ SCRIPT ════════════════════════════════════════════════════════════════ -->
+<script>
+// ── Config ──────────────────────────────────────────────────────────────────
+const SENTIMENT = {
+  Bullish: { label: '↑ Bullish', border: '#22c55e', bg: 'rgba(34,197,94,.15)',
+             text: 'text-green-400', badge: 'bg-green-500/20 text-green-400 border-green-500/30', bar: '#22c55e' },
+  Bearish: { label: '↓ Bearish', border: '#ef4444', bg: 'rgba(239,68,68,.15)',
+             text: 'text-red-400',   badge: 'bg-red-500/20 text-red-400 border-red-500/30',   bar: '#ef4444' },
+  Neutral: { label: '→ Neutral', border: '#f59e0b', bg: 'rgba(245,158,11,.1)',
+             text: 'text-amber-400', badge: 'bg-amber-500/20 text-amber-400 border-amber-500/30', bar: '#f59e0b' },
+};
+const CATALYST_ICON = {
+  earnings: '📊', analyst_rating: '📈', regulation: '⚖️', product_launch: '🚀',
+  m_and_a: '🤝', management: '👔', litigation: '⚠️', macro: '🌍',
+};
+
+// ── State ────────────────────────────────────────────────────────────────────
+let isMock = true;
+let priceChart = null;
+let volumeChart = null;
+
+// ── Mock toggle ──────────────────────────────────────────────────────────────
+function toggleMock() {
+  isMock = !isMock;
+  document.getElementById('toggle-track').className =
+    `w-10 h-5 rounded-full transition-colors duration-200 ${isMock ? 'bg-amber-500' : 'bg-slate-600'}`;
+  document.getElementById('toggle-dot').className =
+    `absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${isMock ? 'translate-x-5' : 'translate-x-0'}`;
+  document.getElementById('mock-badge').className =
+    `text-xs font-semibold px-2.5 py-1 rounded-full border ${isMock
+      ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+      : 'bg-slate-700 text-slate-500 border-slate-600'}`;
+  document.getElementById('mock-badge').textContent = isMock ? 'MOCK' : 'LIVE';
+}
+
+// ── UI state helpers ─────────────────────────────────────────────────────────
+function showState(state) { // 'loading' | 'error' | 'dashboard'
+  ['loading','error','dashboard'].forEach(s => {
+    const el = document.getElementById(`state-${s}`) || document.getElementById(s);
+    if (el) el.classList.add('hidden');
+  });
+  const el = document.getElementById(`state-${state}`) || document.getElementById(state);
+  if (el) {
+    el.classList.remove('hidden');
+    if (state !== 'loading') el.classList.add('flex');
+  }
+}
+
+// ── API ──────────────────────────────────────────────────────────────────────
+async function analyze() {
+  const ticker = document.getElementById('ticker-input').value.trim().toUpperCase();
+  if (!ticker) return;
+
+  showState('loading');
+  try {
+    const res = await fetch(`/api/stock-insights?ticker=${ticker}&mock=${isMock}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || res.statusText);
+    }
+    const data = await res.json();
+    renderDashboard(data);
+    showState('dashboard');
+  } catch (e) {
+    document.getElementById('error-msg').textContent = `Error: ${e.message}`;
+    showState('error');
+  }
+}
+
+// ── Render: dashboard ────────────────────────────────────────────────────────
+function renderDashboard(data) {
+  renderPriceHeader(data.latest_quote, data.is_mock);
+  renderCandlestick(data.kline_7d);
+  renderVolume(data.kline_7d);
+  renderSentiment(data.sentiment_summary);
+  renderCatalysts(data.catalysts);
+  document.getElementById('catalyst-count').textContent =
+    `${data.sentiment_summary.total} 則`;
+}
+
+// ── Render: price header ──────────────────────────────────────────────────────
+function renderPriceHeader(q, isMockData) {
+  document.getElementById('h-symbol').textContent = q.symbol;
+  document.getElementById('h-currency').textContent = q.currency || 'USD';
+  document.getElementById('h-price').textContent = `$${q.current_price.toFixed(2)}`;
+  document.getElementById('h-prev').textContent = `$${q.previous_close.toFixed(2)}`;
+
+  const diff = q.current_price - q.previous_close;
+  const pct  = (diff / q.previous_close) * 100;
+  const sign = diff >= 0 ? '+' : '';
+  const el   = document.getElementById('h-change');
+  el.textContent = `${sign}$${diff.toFixed(2)} (${sign}${pct.toFixed(2)}%)`;
+  el.className = `text-lg font-semibold ${diff >= 0 ? 'text-green-400' : 'text-red-400'}`;
+
+  document.getElementById('h-mcap').textContent = fmtCap(q.market_cap);
+  document.getElementById('h-mock-tag').classList.toggle('hidden', !isMockData);
+}
+
+// ── Render: candlestick chart ─────────────────────────────────────────────────
+const CandlestickPlugin = {
+  id: 'candlestick',
+  afterDatasetsDraw(chart) {
+    const { ctx, scales: { x, y }, data } = chart;
+    const klines = chart._klines;
+    if (!klines) return;
+    const meta = chart.getDatasetMeta(0);
+
+    meta.data.forEach((bar, i) => {
+      const k = klines[i];
+      if (!k || bar.x == null) return;
+
+      const xc   = bar.x;
+      const highY = y.getPixelForValue(k.high);
+      const lowY  = y.getPixelForValue(k.low);
+      const openY = y.getPixelForValue(k.open);
+      const closeY= y.getPixelForValue(k.close);
+      const bull  = k.close >= k.open;
+      const color = bull ? '#22c55e' : '#ef4444';
+      const hw    = 7; // half-width of body in px
+
+      ctx.save();
+      // Wick
+      ctx.beginPath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.moveTo(xc, highY);
+      ctx.lineTo(xc, lowY);
+      ctx.stroke();
+      // Body
+      const by = Math.min(openY, closeY);
+      const bh = Math.max(Math.abs(openY - closeY), 2);
+      ctx.fillStyle = bull ? 'rgba(34,197,94,.75)' : 'rgba(239,68,68,.9)';
+      ctx.fillRect(xc - hw, by, hw * 2, bh);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(xc - hw, by, hw * 2, bh);
+      ctx.restore();
+    });
+  }
+};
+
+function renderCandlestick(klines) {
+  if (priceChart) priceChart.destroy();
+  const ctx = document.getElementById('price-chart').getContext('2d');
+  const lo  = Math.min(...klines.map(k => k.low));
+  const hi  = Math.max(...klines.map(k => k.high));
+  const pad = (hi - lo) * 0.12;
+
+  priceChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: klines.map(k => k.date.slice(5)), // MM-DD
+      datasets: [{
+        // Invisible floating bars to anchor y-scale
+        data: klines.map(k => [k.low, k.high]),
+        backgroundColor: 'transparent',
+        borderColor: 'transparent',
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 400 },
+      scales: {
+        x: {
+          grid: { color: '#1e293b' },
+          ticks: { color: '#64748b', font: { size: 11 } },
+          border: { color: '#334155' },
+        },
+        y: {
+          position: 'right',
+          min: lo - pad,
+          max: hi + pad,
+          grid: { color: '#1e293b80' },
+          ticks: {
+            color: '#64748b', font: { size: 11 },
+            callback: v => '$' + v.toFixed(1),
+          },
+          border: { color: '#334155' },
+        },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: items => klines[items[0].dataIndex].date,
+            label: item => {
+              const k = klines[item.dataIndex];
+              return [
+                `  Open   $${k.open.toFixed(2)}`,
+                `  High   $${k.high.toFixed(2)}`,
+                `  Low    $${k.low.toFixed(2)}`,
+                `  Close  $${k.close.toFixed(2)}`,
+              ];
+            },
+            labelColor: item => {
+              const k = klines[item.dataIndex];
+              const c = k.close >= k.open ? '#22c55e' : '#ef4444';
+              return { borderColor: c, backgroundColor: c };
+            },
+          },
+          backgroundColor: '#0f172a',
+          borderColor: '#334155',
+          borderWidth: 1,
+          titleColor: '#f1f5f9',
+          bodyColor: '#94a3b8',
+          padding: 10,
+          displayColors: true,
+          boxWidth: 10,
+          boxHeight: 10,
+        },
+      },
+    },
+    plugins: [CandlestickPlugin],
+  });
+  priceChart._klines = klines; // attach for plugin
+}
+
+// ── Render: volume bars ───────────────────────────────────────────────────────
+function renderVolume(klines) {
+  if (volumeChart) volumeChart.destroy();
+  const ctx = document.getElementById('volume-chart').getContext('2d');
+  const colors = klines.map(k =>
+    k.close >= k.open ? 'rgba(34,197,94,.45)' : 'rgba(239,68,68,.45)');
+
+  volumeChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: klines.map(k => k.date.slice(5)),
+      datasets: [{ data: klines.map(k => k.volume), backgroundColor: colors, borderWidth: 0 }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 400 },
+      scales: {
+        x: { display: false },
+        y: {
+          display: true,
+          position: 'right',
+          ticks: { color: '#475569', font: { size: 9 }, callback: v => fmtVol(v) },
+          grid: { display: false },
+          border: { display: false },
+        },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: items => klines[items[0].dataIndex].date,
+            label: item => `  Volume  ${fmtVol(item.raw)}`,
+          },
+          backgroundColor: '#0f172a',
+          borderColor: '#334155',
+          borderWidth: 1,
+          titleColor: '#f1f5f9',
+          bodyColor: '#94a3b8',
+          padding: 10,
+        },
+      },
+    },
+  });
+}
+
+// ── Render: sentiment bars ────────────────────────────────────────────────────
+function renderSentiment(ss) {
+  const total = ss.total || 1;
+  const html  = [
+    ['Bullish', ss.bullish],
+    ['Bearish', ss.bearish],
+    ['Neutral', ss.neutral],
+  ].map(([key, count]) => {
+    const cfg = SENTIMENT[key];
+    const pct = Math.round((count / total) * 100);
+    return `
+      <div>
+        <div class="flex justify-between items-center mb-1.5">
+          <span class="${cfg.text} text-sm font-semibold">${cfg.label}</span>
+          <span class="text-slate-300 text-sm font-bold tabular-nums">${count} <span class="text-slate-500 font-normal">/ ${ss.total}</span></span>
+        </div>
+        <div class="h-2 rounded-full bg-slate-700 overflow-hidden">
+          <div class="h-2 rounded-full transition-all duration-500"
+               style="width:${ss.total ? pct : 0}%;background:${cfg.bar}"></div>
+        </div>
+      </div>`;
+  }).join('');
+  document.getElementById('sentiment-bars').innerHTML = html;
+}
+
+// ── Render: catalyst cards ────────────────────────────────────────────────────
+function renderCatalysts(catalysts) {
+  if (!catalysts || !catalysts.length) {
+    document.getElementById('catalyst-cards').innerHTML = `
+      <div class="text-slate-500 text-sm text-center py-10">
+        無催化劑新聞
+      </div>`;
+    return;
+  }
+
+  const html = catalysts.map(c => {
+    const cfg  = SENTIMENT[c.sentiment] || SENTIMENT.Neutral;
+    const icon = CATALYST_ICON[c.catalyst_type] || '📰';
+    const date = c.published ? c.published.slice(0, 10) : '';
+    return `
+      <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700
+                  card-hover fade-in cursor-default"
+           style="border-left: 3px solid ${cfg.border}">
+        <!-- Top row -->
+        <div class="flex items-start justify-between gap-2 mb-2">
+          <span class="text-xs text-slate-400 flex items-center gap-1.5 min-w-0">
+            <span class="shrink-0">${icon}</span>
+            <span class="truncate">${c.catalyst_type.replace('_',' ')} · ${c.source}</span>
+          </span>
+          <span class="shrink-0 text-xs font-bold px-2 py-0.5 rounded-full border
+                       ${cfg.badge}">
+            ${cfg.label}
+          </span>
+        </div>
+        <!-- Title -->
+        <h3 class="text-sm font-semibold text-slate-100 mb-2 leading-snug line-clamp-2">
+          ${escHtml(c.original_title)}
+        </h3>
+        <!-- Summary -->
+        <p class="text-sm text-slate-300 leading-relaxed">${escHtml(c.summary)}</p>
+        <!-- Footer -->
+        <div class="mt-3 flex items-center justify-between text-xs text-slate-500">
+          <span>${date}</span>
+          <a href="${c.link}" target="_blank" rel="noopener"
+             class="hover:text-blue-400 transition-colors">
+            閱讀原文 →
+          </a>
+        </div>
+      </div>`;
+  }).join('');
+  document.getElementById('catalyst-cards').innerHTML = html;
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function fmtCap(n) {
+  if (!n) return '–';
+  if (n >= 1e12) return `$${(n/1e12).toFixed(2)}T`;
+  if (n >= 1e9)  return `$${(n/1e9).toFixed(2)}B`;
+  return `$${(n/1e6).toFixed(0)}M`;
+}
+function fmtVol(v) {
+  if (v >= 1e6) return (v/1e6).toFixed(1)+'M';
+  if (v >= 1e3) return (v/1e3).toFixed(0)+'K';
+  return String(v);
+}
+function escHtml(s) {
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  showState('dashboard'); // show the skeleton first
+  analyze();              // auto-load AAPL mock data
+});
+</script>
+
+</body>
+</html>
