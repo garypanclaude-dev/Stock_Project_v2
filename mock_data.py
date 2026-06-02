@@ -217,6 +217,26 @@ def get_mock_response(ticker: str, period: str = "3M") -> dict:
     return _build_generic(ticker, period)
 
 
+def get_mock_batch_quotes(tickers: list[str]) -> list[dict]:
+    results = []
+    for ticker in tickers:
+        resp = get_mock_response(ticker, "1M")
+        q = resp["latest_quote"]
+        diff = round(q["current_price"] - q["previous_close"], 2)
+        pct = round((diff / q["previous_close"]) * 100, 2) if q["previous_close"] else 0
+        results.append({
+            "symbol": ticker,
+            "current_price": q["current_price"],
+            "previous_close": q["previous_close"],
+            "change": diff,
+            "change_pct": pct,
+            "currency": q.get("currency", "USD"),
+            "market_cap": q.get("market_cap"),
+            "error": None,
+        })
+    return results
+
+
 def _build_generic(ticker: str, period: str) -> dict:
     full_klines = _generate_klines(150.0, f"{ticker}-full", 420)
     full_ind = _attach_indicators(full_klines)

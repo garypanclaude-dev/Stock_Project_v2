@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from typing import List
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -14,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from mock_data import get_mock_response
+from mock_data import get_mock_response, get_mock_batch_quotes
 
 
 def _normalize_ticker(raw: str) -> str:
@@ -33,7 +34,7 @@ def _normalize_ticker(raw: str) -> str:
 
 VALID_PERIODS = {"1M", "3M", "6M", "1Y", "YTD"}
 
-app = FastAPI(title="Stock Insights API", version="2.0.0")
+app = FastAPI(title="Stock Insights API", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -45,9 +46,10 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "2.0.0"}
+    return {"status": "ok", "version": "2.1.0"}
 
 
+# ── Full insights (single stock) ─────────────────────────────────────────────
 @app.get("/api/stock-insights")
 async def get_stock_insights(
     ticker: str = Query(..., min_length=1, max_length=10),
@@ -101,6 +103,53 @@ async def get_stock_insights(
             "total": len(catalysts),
         },
     }
+
+
+# ── Batch quotes (for watchlist) ──────────────────────────────────────────────
+@app.get("/api/batch-quotes")
+async def get_batch_quotes(
+    tickers: str = Query(..., description="Comma-separated tickers, e.g. AAPL,TSLA,NVDA"),
+    mock: bool = Query(True),
+) -> dict:
+    raw_list = [t.strip() for t in tickers.split(",") if t.strip()]
+    if not raw_list:
+        raise HTTPException(status_code=400, detail="No tickers provided")
+    if len(raw_list) > 20:
+        raise HTTPException(status_code=400, detail="Max 20 tickers per request")
+
+    normalized = [_normalize_ticker(t) for t in raw_list]
+
+    if mock:
+        return {"quotes": get_mock_batch_quotes(normalized)}
+
+    try:
+        from stock_fetcher.stock_price import fetch_stock_price
+
+        async def _fetch_one(symbol: str) -> dict:
+            try:
+                data = await asyncio.to_thread(fetch_stock_price, symbol, "1M")
+                q = data["latest_quote"]
+                diff = q["current_price"] - q["previous_close"]
+                pct = (diff / q["previous_close"]) * 100 if q["previous_close"] else 0
+                return {
+                    "symbol": symbol,
+                    "current_price": q["current_price"],
+                    "previous_close": q["previous_close"],
+                    "change": round(diff, 2),
+                    "change_pct": round(pct, 2),
+                    "currency": q.get("currency", "USD"),
+                    "market_cap": q.get("market_cap"),
+                    "error": None,
+                }
+            except Exception as e:
+                return {"symbol": symbol, "error": str(e)}
+
+        results = await asyncio.gather(*[_fetch_one(s) for s in normalized])
+
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Upstream error: {exc}") from exc
+
+    return {"quotes": list(results)}
 
 
 _frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
