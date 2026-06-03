@@ -395,11 +395,11 @@ document.getElementById('period-btns').addEventListener('click', async (e) => {
 
   try {
     const ticker = document.getElementById('ticker-input').value.trim().toUpperCase();
-    const res = await fetch(`/api/stock-insights?ticker=${ticker}&period=${currentPeriod}&mock=${isMock}`);
+    const res = await fetch(`/api/stock-chart?ticker=${ticker}&period=${currentPeriod}&mock=${isMock}`);
     if (!res.ok) throw new Error('Failed');
     const data = await res.json();
 
-    // Only update chart-related data, keep everything else
+    // Only update chart data — fundamentals/catalysts/sentiment untouched
     currentData.kline = data.kline;
     currentData.indicators = data.indicators;
     currentData.period = data.period;
@@ -433,6 +433,7 @@ function toggleMock() {
   document.getElementById('toggle-dot').className = `absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${isMock ? 'translate-x-5' : 'translate-x-0'}`;
   document.getElementById('mock-badge').className = `text-xs font-semibold px-2.5 py-1 rounded-full border ${isMock ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' : 'bg-slate-700 text-slate-500 border-slate-600'}`;
   document.getElementById('mock-badge').textContent = isMock ? 'MOCK' : 'LIVE';
+  refreshWatchlist();  // sync watchlist with new mode
 }
 
 // ── UI state helpers ─────────────────────────────────────────────────────────
@@ -461,7 +462,24 @@ async function analyze() {
     currentData = await res.json();
     renderDashboard(currentData);
     showState('dashboard');
-    renderWatchlist(); // update active highlight
+
+    // Update this stock's quote in watchlist from the fresh data
+    if (currentData.latest_quote && watchlist.includes(currentTicker)) {
+      const q = currentData.latest_quote;
+      const diff = q.current_price - q.previous_close;
+      const pct = q.previous_close ? (diff / q.previous_close) * 100 : 0;
+      wlQuotes[currentTicker] = {
+        symbol: currentTicker,
+        current_price: q.current_price,
+        previous_close: q.previous_close,
+        change: Math.round(diff * 100) / 100,
+        change_pct: Math.round(pct * 100) / 100,
+        currency: q.currency || 'USD',
+        market_cap: q.market_cap,
+        error: null,
+      };
+    }
+    renderWatchlist(); // update active highlight + fresh quote
   } catch (e) {
     document.getElementById('error-msg').textContent = `Error: ${e.message}`;
     showState('error');
@@ -480,6 +498,7 @@ function renderDashboard(d) {
   renderDividend(d.fundamentals);
   renderQuarterly(d.fundamentals);
   renderSentiment(d.sentiment_summary);
+  renderAiError(d.ai_error);
   renderCatalysts(d.catalysts);
   document.getElementById('catalyst-count').textContent = `${d.sentiment_summary.total} 則`;
 }
@@ -640,6 +659,19 @@ function renderSentiment(ss) {
   const total = ss.total||1;
   document.getElementById('sentiment-bars').innerHTML = [['Bullish',ss.bullish],['Bearish',ss.bearish],['Neutral',ss.neutral]].map(([key,count])=>{const cfg=SENTIMENT[key];const pct=Math.round((count/total)*100);return`<div><div class="flex justify-between items-center mb-1.5"><span class="${cfg.text} text-sm font-semibold">${cfg.label}</span><span class="text-slate-300 text-sm font-bold tabular-nums">${count} <span class="text-slate-500 font-normal">/ ${ss.total}</span></span></div><div class="h-2 rounded-full bg-slate-700 overflow-hidden"><div class="h-2 rounded-full transition-all duration-500" style="width:${ss.total?pct:0}%;background:${cfg.bar}"></div></div></div>`}).join('');
 }
+function renderAiError(msg) {
+  // Insert/remove a warning banner above the catalyst cards
+  const existing = document.getElementById('ai-error-banner');
+  if (existing) existing.remove();
+  if (!msg) return;
+  const banner = document.createElement('div');
+  banner.id = 'ai-error-banner';
+  banner.className = 'bg-amber-950/40 border border-amber-500/30 rounded-2xl p-4 text-center mb-3 fade-in';
+  banner.innerHTML = `<p class="text-amber-400 text-sm font-medium">${escHtml(msg)}</p>`;
+  const container = document.getElementById('catalyst-cards');
+  container.parentElement.insertBefore(banner, container);
+}
+
 function renderCatalysts(catalysts) {
   if (!catalysts?.length) { document.getElementById('catalyst-cards').innerHTML = '<div class="text-slate-500 text-sm text-center py-10">無催化劑新聞</div>'; return; }
   document.getElementById('catalyst-cards').innerHTML = catalysts.map(c=>{const cfg=SENTIMENT[c.sentiment]||SENTIMENT.Neutral;const icon=CATALYST_ICON[c.catalyst_type]||'📰';const date=c.published?c.published.slice(0,10):'';return`<div class="bg-slate-800 rounded-2xl p-4 border border-slate-700 card-hover fade-in cursor-default mb-3" style="border-left:3px solid ${cfg.border}"><div class="flex items-start justify-between gap-2 mb-2"><span class="text-xs text-slate-400 flex items-center gap-1.5 min-w-0"><span class="shrink-0">${icon}</span><span class="truncate">${c.catalyst_type.replace('_',' ')} · ${c.source}</span></span><span class="shrink-0 text-xs font-bold px-2 py-0.5 rounded-full border ${cfg.badge}">${cfg.label}</span></div><h3 class="text-sm font-semibold text-slate-100 mb-2 leading-snug line-clamp-2">${escHtml(c.original_title)}</h3><p class="text-sm text-slate-300 leading-relaxed">${escHtml(c.summary)}</p><div class="mt-3 flex items-center justify-between text-xs text-slate-500"><span>${date}</span><a href="${c.link}" target="_blank" rel="noopener" class="hover:text-blue-400 transition-colors">閱讀原文 →</a></div></div>`}).join('');

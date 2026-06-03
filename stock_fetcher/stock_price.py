@@ -1,6 +1,7 @@
 import yfinance as yf
 from datetime import datetime, timedelta
 
+from .cache import ttl_cache
 from .indicators import compute_all
 from .utils import retry
 
@@ -13,6 +14,7 @@ PERIOD_MAP = {
 }
 
 
+@ttl_cache(ttl_seconds=300)  # 5 min
 @retry(max_retries=3, base_delay=2.0, exceptions=(Exception,))
 def fetch_stock_price(symbol: str, period: str = "3M") -> dict:
     ticker = yf.Ticker(symbol)

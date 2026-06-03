@@ -6,11 +6,13 @@ from datetime import datetime
 
 import yfinance as yf
 
+from .cache import ttl_cache
 from .utils import retry
 
 logger = logging.getLogger(__name__)
 
 
+@ttl_cache(ttl_seconds=3600)  # 1 hr
 @retry(max_retries=3, base_delay=2.0, exceptions=(Exception,))
 def fetch_fundamentals(symbol: str) -> dict:
     ticker = yf.Ticker(symbol)

@@ -217,6 +217,16 @@ def get_mock_response(ticker: str, period: str = "3M") -> dict:
     return _build_generic(ticker, period)
 
 
+def get_mock_chart_data(ticker: str, period: str = "3M") -> dict:
+    if ticker in _STOCKS:
+        full_kl, full_ind, *_ = _STOCKS[ticker]
+    else:
+        full_kl = _generate_klines(150.0, f"{ticker}-full", 420)
+        full_ind = _attach_indicators(full_kl)
+    klines, indicators = _trim_to_period(full_kl, full_ind, period)
+    return {"symbol": ticker, "period": period, "kline": klines, "indicators": indicators}
+
+
 def get_mock_batch_quotes(tickers: list[str]) -> list[dict]:
     results = []
     for ticker in tickers:

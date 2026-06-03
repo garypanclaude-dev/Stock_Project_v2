@@ -15,7 +15,11 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from mock_data import get_mock_response, get_mock_batch_quotes
+import logging
+
+from mock_data import get_mock_response, get_mock_batch_quotes, get_mock_chart_data
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_ticker(raw: str) -> str:
@@ -63,9 +67,10 @@ async def get_stock_insights(
     if mock:
         return get_mock_response(ticker, period)
 
-    try:
-        from stock_fetcher import analyze_news, fetch_stock_news, fetch_stock_price, fetch_fundamentals
+    # ── Step 1: fetch price, news, fundamentals in parallel ─────────────
+    from stock_fetcher import analyze_news, fetch_stock_news, fetch_stock_price, fetch_fundamentals
 
+    try:
         price_task = asyncio.to_thread(fetch_stock_price, ticker, period)
         news_task = asyncio.to_thread(fetch_stock_news, ticker)
         fund_task = asyncio.to_thread(fetch_fundamentals, ticker)
@@ -73,15 +78,22 @@ async def get_stock_insights(
         price_data, news_data, fundamentals = await asyncio.gather(
             price_task, news_task, fund_task
         )
-
-        catalysts = await asyncio.to_thread(analyze_news, news_data)
-
     except EnvironmentError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Upstream error: {exc}") from exc
+        logger.exception("Upstream error for %s", ticker)
+        raise HTTPException(status_code=502, detail="Service temporarily unavailable") from exc
+
+    # ── Step 2: AI analysis — graceful degradation if it fails ────────
+    catalysts: list[dict] = []
+    ai_error: str | None = None
+    try:
+        catalysts = await asyncio.to_thread(analyze_news, news_data)
+    except Exception as exc:
+        logger.warning("AI analysis failed for %s: %s", ticker, exc)
+        ai_error = "AI 分析暫時不可用（可能為 API 配額已達上限），其餘數據正常顯示。"
 
     bullish = sum(1 for c in catalysts if c.get("sentiment") == "Bullish")
     bearish = sum(1 for c in catalysts if c.get("sentiment") == "Bearish")
@@ -91,6 +103,7 @@ async def get_stock_insights(
         "symbol": ticker,
         "period": period,
         "is_mock": False,
+        "ai_error": ai_error,
         "latest_quote": price_data["latest_quote"],
         "kline": price_data["kline"],
         "indicators": price_data["indicators"],
@@ -102,6 +115,37 @@ async def get_stock_insights(
             "neutral": neutral,
             "total": len(catalysts),
         },
+    }
+
+
+# ── Chart only (for period switching — no news/gemini/fundamentals) ────────────
+@app.get("/api/stock-chart")
+async def get_stock_chart(
+    ticker: str = Query(..., min_length=1, max_length=10),
+    period: str = Query("3M"),
+    mock: bool = Query(True),
+) -> dict:
+    ticker = _normalize_ticker(ticker)
+    if period not in VALID_PERIODS:
+        raise HTTPException(status_code=400, detail=f"Invalid period. Choose from: {VALID_PERIODS}")
+
+    if mock:
+        return get_mock_chart_data(ticker, period)
+
+    try:
+        from stock_fetcher import fetch_stock_price
+        price_data = await asyncio.to_thread(fetch_stock_price, ticker, period)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Chart fetch error for %s", ticker)
+        raise HTTPException(status_code=502, detail="Service temporarily unavailable") from exc
+
+    return {
+        "symbol": ticker,
+        "period": period,
+        "kline": price_data["kline"],
+        "indicators": price_data["indicators"],
     }
 
 

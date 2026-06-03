@@ -2,11 +2,13 @@ import feedparser
 import requests
 from datetime import datetime
 
+from .cache import ttl_cache
 from .utils import retry
 
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?q={query}+stock&hl=en-US&gl=US&ceid=US:en"
 
 
+@ttl_cache(ttl_seconds=1800)  # 30 min
 @retry(max_retries=3, base_delay=2.0, exceptions=(requests.RequestException, Exception))
 def fetch_stock_news(symbol: str, max_items: int = 10) -> dict:
     """

@@ -1,10 +1,13 @@
+import hashlib
 import json
 import logging
 import os
+import re
 
 from google import genai
 from google.genai import types
 
+from .cache import ttl_cache
 from .utils import retry
 
 logger = logging.getLogger(__name__)
@@ -62,12 +65,13 @@ SYSTEM_PROMPT = """你是一位資深金融分析師，專精於從新聞中辨�
 
 MODEL = "gemini-2.5-flash"
 
+VALID_SENTIMENTS = {"Bullish", "Bearish", "Neutral"}
+VALID_CATALYST_TYPES = {"earnings", "product_launch", "regulation", "analyst_rating", "m_and_a", "management", "litigation", "macro"}
 
-@retry(max_retries=3, base_delay=60.0, backoff_factor=1.5)
+
 def analyze_news(news_data: dict) -> list[dict]:
     """
-    將原始新聞資料送入 Gemini 進行催化劑過濾與情緒分析。
-    news_data: fetch_stock_news() 的回傳值。
+    Entry point — uses a content hash so identical news hits cache.
     """
     symbol = news_data.get("symbol", "UNKNOWN")
     news_list = news_data.get("news", [])
@@ -76,13 +80,20 @@ def analyze_news(news_data: dict) -> list[dict]:
         logger.info("No news to analyze for %s", symbol)
         return []
 
+    # Build a stable hash of the news content for cache keying
+    content_hash = _hash_news(news_list)
+    return _analyze_cached(symbol, content_hash, json.dumps(news_list, ensure_ascii=False))
+
+
+@ttl_cache(ttl_seconds=3600)  # 1 hr — same news set won't be re-analyzed
+@retry(max_retries=3, base_delay=3.0, backoff_factor=2.0)
+def _analyze_cached(symbol: str, content_hash: str, news_json: str) -> list[dict]:
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise EnvironmentError("GEMINI_API_KEY environment variable is not set")
 
     client = genai.Client(api_key=api_key)
-
-    user_message = f"請分析以下 {symbol} 的相關新聞：\n\n{json.dumps(news_list, ensure_ascii=False, indent=2)}"
+    user_message = f"請分析以下 {symbol} 的相關新聞：\n\n{news_json}"
 
     response = client.models.generate_content(
         model=MODEL,
@@ -91,34 +102,72 @@ def analyze_news(news_data: dict) -> list[dict]:
             system_instruction=SYSTEM_PROMPT,
             max_output_tokens=4096,
             temperature=0.2,
+            response_mime_type="application/json",
         ),
     )
 
     raw_text = response.text.strip()
     result = _parse_json_response(raw_text)
+    result = _validate_catalysts(result)
 
     logger.info(
-        "Analyzed %d news for %s → %d catalysts identified",
-        len(news_list), symbol, len(result),
+        "Analyzed news for %s → %d catalysts identified (hash=%s)",
+        symbol, len(result), content_hash[:8],
     )
     return result
 
 
+def _hash_news(news_list: list[dict]) -> str:
+    titles = "|".join(n.get("title", "") for n in news_list)
+    return hashlib.md5(titles.encode()).hexdigest()
+
+
 def _parse_json_response(text: str) -> list[dict]:
     text = text.strip()
+
+    # Strip markdown code fences
     if text.startswith("```"):
         lines = text.split("\n")
         lines = [l for l in lines if not l.strip().startswith("```")]
         text = "\n".join(lines).strip()
 
+    # Try direct parse first
     try:
         parsed = json.loads(text)
-    except json.JSONDecodeError as e:
-        logger.error("Failed to parse LLM response as JSON: %s", e)
-        logger.debug("Raw response: %s", text[:500])
-        raise ValueError(f"LLM response is not valid JSON: {e}") from e
+        if isinstance(parsed, list):
+            return parsed
+    except json.JSONDecodeError:
+        pass
 
-    if not isinstance(parsed, list):
-        raise ValueError(f"Expected JSON Array, got {type(parsed).__name__}")
+    # Fallback: extract first [...] block via regex
+    match = re.search(r'\[.*\]', text, re.DOTALL)
+    if match:
+        try:
+            parsed = json.loads(match.group())
+            if isinstance(parsed, list):
+                logger.warning("Used regex fallback to extract JSON array")
+                return parsed
+        except json.JSONDecodeError:
+            pass
 
-    return parsed
+    logger.error("Failed to parse LLM response as JSON. Raw: %s", text[:500])
+    return []  # graceful degradation instead of crashing
+
+
+def _validate_catalysts(catalysts: list[dict]) -> list[dict]:
+    """Filter out malformed catalyst entries."""
+    valid = []
+    for c in catalysts:
+        if not isinstance(c, dict):
+            continue
+        # Ensure required fields exist
+        if not c.get("original_title") or not c.get("sentiment"):
+            continue
+        # Normalize sentiment
+        if c["sentiment"] not in VALID_SENTIMENTS:
+            c["sentiment"] = "Neutral"
+        # Normalize catalyst_type
+        if c.get("catalyst_type") not in VALID_CATALYST_TYPES:
+            c["catalyst_type"] = "macro"
+        valid.append(c)
+    return valid
