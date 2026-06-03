@@ -6,6 +6,7 @@ import random
 from datetime import date, timedelta
 
 from stock_fetcher.indicators import compute_all
+from stock_fetcher.scoring import compute_composite_score
 
 
 # ── Helper: generate extended kline for a period ─────────────────────────────
@@ -190,16 +191,37 @@ def _build_stock(
         "query_time": "2026-05-21T10:00:00",
     }
 
+    score = compute_composite_score(
+        indicators=indicators,
+        fundamentals=fundamentals,
+        sentiment_summary=sentiment,
+        catalysts=catalysts,
+        kline=klines,
+    )
+
+    # Mock commentary based on grade
+    grade_label = score["grade"]["label"]
+    commentary_map = {
+        "強勢": f"技術面多頭排列，均線呈多頭排列；基本面獲利能力穩健。短期策略建議：順勢操作，逢回佈局。",
+        "偏多": f"技術面偏多，RSI 處於健康區間；基本面估值合理。短期策略建議：可逢回佈局，注意壓力位。",
+        "中性": f"技術面與基本面訊號交織，多空力道均衡。短期策略建議：觀望為主，等待方向明確。",
+        "偏空": f"技術面偏弱，均線趨勢向下；基本面承壓。短期策略建議：謹慎操作，注意支撐位。",
+        "弱勢": f"技術面明顯弱勢，多項指標超賣；基本面數據疲軟。短期策略建議：避開或減碼，等待止穩訊號。",
+    }
+
     return {
         "symbol": symbol,
         "period": period,
         "is_mock": True,
+        "ai_error": None,
         "latest_quote": quote,
         "kline": klines,
         "indicators": indicators,
         "fundamentals": fundamentals,
         "catalysts": catalysts,
         "sentiment_summary": sentiment,
+        "score": score,
+        "commentary": commentary_map.get(grade_label, ""),
     }
 
 
@@ -256,10 +278,28 @@ def _build_generic(ticker: str, period: str) -> dict:
     prev = klines[-2] if len(klines) > 1 else full_klines[-2]
     rng = random.Random(ticker)
 
+    fund = {
+        "symbol": ticker,
+        "valuation": {"pe_ratio": round(rng.uniform(10, 60), 2), "forward_pe": round(rng.uniform(8, 50), 2), "pb_ratio": round(rng.uniform(1, 20), 2), "ps_ratio": round(rng.uniform(1, 15), 2), "peg_ratio": round(rng.uniform(0.5, 4), 2)},
+        "per_share": {"eps_ttm": round(rng.uniform(1, 20), 2), "eps_forward": round(rng.uniform(1, 25), 2), "book_value": round(rng.uniform(5, 50), 2), "revenue_per_share": round(rng.uniform(10, 80), 2)},
+        "profitability": {"roe": round(rng.uniform(5, 50), 2), "roa": round(rng.uniform(2, 25), 2), "profit_margin": round(rng.uniform(5, 30), 2), "gross_margin": round(rng.uniform(20, 60), 2), "operating_margin": round(rng.uniform(5, 35), 2)},
+        "dividend": {"dividend_yield": round(rng.uniform(0, 3), 2), "dividend_rate": round(rng.uniform(0, 5), 2), "payout_ratio": round(rng.uniform(10, 60), 2), "ex_dividend_date": None},
+        "summary": {"sector": "Technology", "industry": "Software", "market_cap": None, "enterprise_value": None, "fifty_two_week_high": None, "fifty_two_week_low": None, "fifty_day_avg": None, "two_hundred_day_avg": None, "beta": round(rng.uniform(0.5, 2.5), 2), "short_ratio": round(rng.uniform(0.5, 5), 2)},
+        "quarterly_financials": [],
+        "query_time": "2026-05-21T10:00:00",
+    }
+    sent = {"bullish": 0, "bearish": 0, "neutral": 0, "total": 0}
+
+    score = compute_composite_score(
+        indicators=indicators, fundamentals=fund,
+        sentiment_summary=None, catalysts=None, kline=klines,
+    )
+
     return {
         "symbol": ticker,
         "period": period,
         "is_mock": True,
+        "ai_error": None,
         "latest_quote": {
             "symbol": ticker, "current_price": last["close"], "previous_close": prev["close"],
             "market_cap": int(last["close"] * rng.randint(100_000_000, 5_000_000_000)),
@@ -267,16 +307,9 @@ def _build_generic(ticker: str, period: str) -> dict:
         },
         "kline": klines,
         "indicators": indicators,
-        "fundamentals": {
-            "symbol": ticker,
-            "valuation": {"pe_ratio": round(rng.uniform(10, 60), 2), "forward_pe": round(rng.uniform(8, 50), 2), "pb_ratio": round(rng.uniform(1, 20), 2), "ps_ratio": round(rng.uniform(1, 15), 2), "peg_ratio": round(rng.uniform(0.5, 4), 2)},
-            "per_share": {"eps_ttm": round(rng.uniform(1, 20), 2), "eps_forward": round(rng.uniform(1, 25), 2), "book_value": round(rng.uniform(5, 50), 2), "revenue_per_share": round(rng.uniform(10, 80), 2)},
-            "profitability": {"roe": round(rng.uniform(5, 50), 2), "roa": round(rng.uniform(2, 25), 2), "profit_margin": round(rng.uniform(5, 30), 2), "gross_margin": round(rng.uniform(20, 60), 2), "operating_margin": round(rng.uniform(5, 35), 2)},
-            "dividend": {"dividend_yield": round(rng.uniform(0, 3), 2), "dividend_rate": round(rng.uniform(0, 5), 2), "payout_ratio": round(rng.uniform(10, 60), 2), "ex_dividend_date": None},
-            "summary": {"sector": "Technology", "industry": "Software", "market_cap": None, "enterprise_value": None, "fifty_two_week_high": None, "fifty_two_week_low": None, "fifty_day_avg": None, "two_hundred_day_avg": None, "beta": round(rng.uniform(0.5, 2.5), 2), "short_ratio": round(rng.uniform(0.5, 5), 2)},
-            "quarterly_financials": [],
-            "query_time": "2026-05-21T10:00:00",
-        },
+        "fundamentals": fund,
         "catalysts": [],
-        "sentiment_summary": {"bullish": 0, "bearish": 0, "neutral": 0, "total": 0},
+        "sentiment_summary": sent,
+        "score": score,
+        "commentary": "技術面與基本面訊號交織，無催化劑新聞。短期策略建議：觀望為主。",
     }

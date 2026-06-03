@@ -142,6 +142,33 @@
       <!-- Dashboard -->
       <div id="dashboard" class="space-y-5">
 
+        <!-- ROW 0: Score card -->
+        <div id="score-card" class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
+          <div class="flex flex-col lg:flex-row gap-6">
+            <!-- Donut chart -->
+            <div class="flex flex-col items-center justify-center shrink-0" style="width:140px">
+              <div style="position:relative; width:120px; height:120px">
+                <canvas id="score-donut"></canvas>
+                <div class="absolute inset-0 flex flex-col items-center justify-center">
+                  <span id="score-number" class="text-3xl font-extrabold tabular-nums">–</span>
+                  <span id="score-label" class="text-xs font-semibold text-slate-400">–</span>
+                </div>
+              </div>
+            </div>
+            <!-- Sub-scores + commentary -->
+            <div class="flex-1 min-w-0">
+              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">綜合投資評分</h2>
+              <div id="sub-scores" class="space-y-2.5 mb-4">
+                <!-- filled by JS -->
+              </div>
+              <div id="commentary-box" class="bg-slate-900/50 rounded-xl p-3 border border-slate-700">
+                <p id="commentary-text" class="text-sm text-slate-300 leading-relaxed">–</p>
+              </div>
+              <p class="text-xs text-slate-600 mt-2">以上僅為分析參考，不構成投資建議，投資決策請自行評估風險。</p>
+            </div>
+          </div>
+        </div>
+
         <!-- ROW 1: Price + Valuation -->
         <div class="grid grid-cols-5 gap-5">
           <div id="price-card" class="col-span-5 lg:col-span-3 bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
@@ -487,7 +514,10 @@ async function analyze() {
 }
 
 // ── Render: full dashboard ───────────────────────────────────────────────────
+let scoreDonut = null;
+
 function renderDashboard(d) {
+  renderScore(d.score, d.commentary);
   renderPriceHeader(d.latest_quote, d.is_mock, d.fundamentals);
   renderCandlestick(d.kline, d.indicators);
   renderVolume(d.kline);
@@ -501,6 +531,74 @@ function renderDashboard(d) {
   renderAiError(d.ai_error);
   renderCatalysts(d.catalysts);
   document.getElementById('catalyst-count').textContent = `${d.sentiment_summary.total} 則`;
+}
+
+// ── Render: composite score ───────────────────────────────────────────────────
+function renderScore(score, commentary) {
+  if (!score) { document.getElementById('score-card').classList.add('hidden'); return; }
+  document.getElementById('score-card').classList.remove('hidden');
+
+  const val = score.composite;
+  const grade = score.grade || {};
+  const color = grade.color || '#f59e0b';
+
+  // Donut chart
+  if (scoreDonut) scoreDonut.destroy();
+  const ctx = document.getElementById('score-donut').getContext('2d');
+  scoreDonut = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      datasets: [{
+        data: [val, 100 - val],
+        backgroundColor: [color, '#1e293b'],
+        borderWidth: 0,
+        cutout: '78%',
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: true,
+      animation: { duration: 600, easing: 'easeOutQuart' },
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    },
+  });
+
+  // Score text
+  document.getElementById('score-number').textContent = val;
+  document.getElementById('score-number').style.color = color;
+  document.getElementById('score-label').textContent = `${grade.label || ''} ${grade.label_en || ''}`;
+
+  // Sub-score bars
+  const subs = [
+    { label: '技術面', score: score.technical?.score ?? 0, weight: score.weights_used?.technical ?? 0 },
+    { label: '基本面', score: score.fundamental?.score ?? 0, weight: score.weights_used?.fundamental ?? 0 },
+    { label: '情緒面', score: score.sentiment?.score ?? 0, weight: score.weights_used?.sentiment ?? 0, available: score.sentiment?.available },
+  ];
+  document.getElementById('sub-scores').innerHTML = subs.map(s => {
+    const pct = s.score;
+    const barColor = pct >= 61 ? '#22c55e' : pct >= 41 ? '#f59e0b' : '#ef4444';
+    const weightPct = Math.round((s.weight || 0) * 100);
+    const unavail = s.available === false ? ' <span class="text-slate-600">(不可用)</span>' : '';
+    return `
+      <div>
+        <div class="flex justify-between items-center mb-1">
+          <span class="text-xs text-slate-400">${s.label} <span class="text-slate-600">${weightPct}%</span>${unavail}</span>
+          <span class="text-xs font-bold tabular-nums" style="color:${barColor}">${pct}</span>
+        </div>
+        <div class="h-1.5 rounded-full bg-slate-700 overflow-hidden">
+          <div class="h-1.5 rounded-full transition-all duration-500" style="width:${pct}%;background:${barColor}"></div>
+        </div>
+      </div>`;
+  }).join('');
+
+  // Commentary
+  const commentaryEl = document.getElementById('commentary-text');
+  if (commentary) {
+    commentaryEl.textContent = commentary;
+    document.getElementById('commentary-box').classList.remove('hidden');
+  } else {
+    commentaryEl.textContent = 'AI 研判暫時不可用';
+    commentaryEl.classList.add('text-slate-500');
+  }
 }
 
 // ── Render: price header ─────────────────────────────────────────────────────

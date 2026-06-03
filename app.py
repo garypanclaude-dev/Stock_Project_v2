@@ -68,7 +68,10 @@ async def get_stock_insights(
         return get_mock_response(ticker, period)
 
     # ── Step 1: fetch price, news, fundamentals in parallel ─────────────
-    from stock_fetcher import analyze_news, fetch_stock_news, fetch_stock_price, fetch_fundamentals
+    from stock_fetcher import (
+        analyze_news, fetch_stock_news, fetch_stock_price, fetch_fundamentals,
+        compute_composite_score, generate_commentary,
+    )
 
     try:
         price_task = asyncio.to_thread(fetch_stock_price, ticker, period)
@@ -99,6 +102,26 @@ async def get_stock_insights(
     bearish = sum(1 for c in catalysts if c.get("sentiment") == "Bearish")
     neutral = sum(1 for c in catalysts if c.get("sentiment") == "Neutral")
 
+    sentiment_summary = {"bullish": bullish, "bearish": bearish, "neutral": neutral, "total": len(catalysts)}
+
+    # ── Step 3: compute composite score (pure calculation, no I/O) ────
+    score = compute_composite_score(
+        indicators=price_data["indicators"],
+        fundamentals=fundamentals,
+        sentiment_summary=sentiment_summary if not ai_error else None,
+        catalysts=catalysts if not ai_error else None,
+        kline=price_data["kline"],
+    )
+
+    # ── Step 4: AI commentary — graceful degradation ─────────────────
+    commentary = None
+    try:
+        commentary = await asyncio.to_thread(
+            generate_commentary, ticker, score, fundamentals, price_data["kline"]
+        )
+    except Exception as exc:
+        logger.warning("AI commentary failed for %s: %s", ticker, exc)
+
     return {
         "symbol": ticker,
         "period": period,
@@ -109,12 +132,9 @@ async def get_stock_insights(
         "indicators": price_data["indicators"],
         "fundamentals": fundamentals,
         "catalysts": catalysts,
-        "sentiment_summary": {
-            "bullish": bullish,
-            "bearish": bearish,
-            "neutral": neutral,
-            "total": len(catalysts),
-        },
+        "sentiment_summary": sentiment_summary,
+        "score": score,
+        "commentary": commentary,
     }
 
 
