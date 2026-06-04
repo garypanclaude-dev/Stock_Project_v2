@@ -280,6 +280,35 @@
           </div>
         </div>
 
+        <!-- ROW 3: Peer + Watchlist Comparison -->
+        <div class="grid grid-cols-2 gap-5">
+          <!-- Peer comparison -->
+          <div class="col-span-2 lg:col-span-1 bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
+            <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">同業比較</h2>
+            <div style="position:relative; height:220px"><canvas id="peer-chart"></canvas></div>
+            <div id="peer-table" class="mt-3 overflow-x-auto"></div>
+          </div>
+          <!-- Watchlist comparison -->
+          <div class="col-span-2 lg:col-span-1 bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
+            <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">自選股比較</h2>
+            <div style="position:relative; height:220px"><canvas id="watchlist-perf-chart"></canvas></div>
+            <div id="watchlist-table" class="mt-3 overflow-x-auto"></div>
+          </div>
+        </div>
+
+        <!-- ROW 4: Stock Screener -->
+        <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">🏆 潛力股篩選</h2>
+            <div class="flex items-center gap-3">
+              <span id="screener-updated" class="text-xs text-slate-600"></span>
+              <button onclick="loadScreener()" class="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded-lg text-slate-300 transition">重新整理</button>
+            </div>
+          </div>
+          <div id="screener-table" class="overflow-x-auto"></div>
+          <p class="text-xs text-slate-600 mt-3">以上僅為量化篩選結果，不構成投資建議，投資決策請自行評估風險。</p>
+        </div>
+
       </div><!-- /dashboard -->
     </div>
   </main>
@@ -531,6 +560,10 @@ function renderDashboard(d) {
   renderAiError(d.ai_error);
   renderCatalysts(d.catalysts);
   document.getElementById('catalyst-count').textContent = `${d.sentiment_summary.total} 則`;
+
+  // Load comparison data (non-blocking)
+  loadPeerComparison();
+  loadWatchlistComparison();
 }
 
 // ── Render: composite score ───────────────────────────────────────────────────
@@ -775,6 +808,152 @@ function renderCatalysts(catalysts) {
   document.getElementById('catalyst-cards').innerHTML = catalysts.map(c=>{const cfg=SENTIMENT[c.sentiment]||SENTIMENT.Neutral;const icon=CATALYST_ICON[c.catalyst_type]||'📰';const date=c.published?c.published.slice(0,10):'';return`<div class="bg-slate-800 rounded-2xl p-4 border border-slate-700 card-hover fade-in cursor-default mb-3" style="border-left:3px solid ${cfg.border}"><div class="flex items-start justify-between gap-2 mb-2"><span class="text-xs text-slate-400 flex items-center gap-1.5 min-w-0"><span class="shrink-0">${icon}</span><span class="truncate">${c.catalyst_type.replace('_',' ')} · ${c.source}</span></span><span class="shrink-0 text-xs font-bold px-2 py-0.5 rounded-full border ${cfg.badge}">${cfg.label}</span></div><h3 class="text-sm font-semibold text-slate-100 mb-2 leading-snug line-clamp-2">${escHtml(c.original_title)}</h3><p class="text-sm text-slate-300 leading-relaxed">${escHtml(c.summary)}</p><div class="mt-3 flex items-center justify-between text-xs text-slate-500"><span>${date}</span><a href="${c.link}" target="_blank" rel="noopener" class="hover:text-blue-400 transition-colors">閱讀原文 →</a></div></div>`}).join('');
 }
 
+// ── Render: peer comparison ───────────────────────────────────────────────────
+let peerChart = null, wlPerfChart = null;
+const PEER_COLORS = ['#3b82f6','#22c55e','#f59e0b','#a855f7','#ef4444','#06b6d4','#ec4899','#84cc16'];
+
+function renderRelativeChart(canvasId, chartRef, perfData) {
+  if (chartRef) chartRef.destroy();
+  if (!perfData || !perfData.labels) return null;
+
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  const syms = Object.keys(perfData.series);
+  const datasets = syms.map((sym, i) => ({
+    label: sym.replace(/\.(TW|SS|SZ)$/,''),
+    data: perfData.series[sym],
+    borderColor: PEER_COLORS[i % PEER_COLORS.length],
+    borderWidth: sym.includes('SPY') || sym.includes('0050') ? 2 : 1.5,
+    borderDash: sym.includes('SPY') || sym.includes('0050') ? [5,3] : [],
+    pointRadius: 0, tension: 0.3, fill: false,
+  }));
+
+  const labels = perfData.labels.length > 60
+    ? perfData.labels.map((l,i) => i % 10 === 0 ? l : '')
+    : perfData.labels.length > 30
+      ? perfData.labels.map((l,i) => i % 5 === 0 ? l : '')
+      : perfData.labels;
+
+  return new Chart(ctx, {
+    type: 'line', data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
+      scales: {
+        x: { grid:{color:'#1e293b'}, ticks:{color:'#64748b',font:{size:9},maxRotation:0}, border:{color:'#334155'} },
+        y: { position:'right', grid:{color:'#1e293b80'}, ticks:{color:'#64748b',font:{size:10},callback:v=>v.toFixed(0)+'%'}, border:{color:'#334155'} },
+      },
+      plugins: {
+        legend: { display:true, position:'top', labels:{color:'#94a3b8',boxWidth:10,boxHeight:3,font:{size:10},usePointStyle:false,padding:8} },
+        tooltip: { backgroundColor:'#0f172a',borderColor:'#334155',borderWidth:1,bodyColor:'#94a3b8',padding:8,
+          callbacks:{ label: item => `  ${item.dataset.label}: ${item.raw?.toFixed(1)}%` } },
+      },
+    },
+  });
+}
+
+function renderComparisonTable(containerId, rows) {
+  if (!rows || !rows.length) return;
+  const el = document.getElementById(containerId);
+  const headers = ['代號','P/E','ROE','Margin','市值','報酬率','殖利率','Beta'];
+  el.innerHTML = `
+    <table class="w-full text-xs">
+      <thead><tr class="text-slate-500 border-b border-slate-700">
+        ${headers.map(h => `<th class="py-1.5 px-2 text-left font-medium">${h}</th>`).join('')}
+      </tr></thead>
+      <tbody>${rows.map(r => {
+        if (r.error) return '';
+        const highlight = r.is_target ? 'bg-blue-500/10 font-bold' : r.is_index ? 'text-slate-500 italic' : '';
+        const retColor = (r.return_period||0) >= 0 ? 'text-green-400' : 'text-red-400';
+        const sym = r.symbol.replace(/\.(TW|SS|SZ)$/,'');
+        return `<tr class="${highlight} border-b border-slate-700/50 hover:bg-slate-700/30">
+          <td class="py-1.5 px-2 font-mono">${sym}${r.is_index?' 📊':''}</td>
+          <td class="py-1.5 px-2 tabular-nums">${r.pe??'–'}</td>
+          <td class="py-1.5 px-2 tabular-nums">${r.roe!=null?r.roe+'%':'–'}</td>
+          <td class="py-1.5 px-2 tabular-nums">${r.margin!=null?r.margin+'%':'–'}</td>
+          <td class="py-1.5 px-2 tabular-nums">${fmtCap(r.mcap)}</td>
+          <td class="py-1.5 px-2 tabular-nums ${retColor}">${r.return_period!=null?(r.return_period>=0?'+':'')+r.return_period+'%':'–'}</td>
+          <td class="py-1.5 px-2 tabular-nums">${r.yield!=null?r.yield+'%':'–'}</td>
+          <td class="py-1.5 px-2 tabular-nums">${r.beta??'–'}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`;
+}
+
+async function loadPeerComparison() {
+  const ticker = document.getElementById('ticker-input').value.trim().toUpperCase();
+  if (!ticker) return;
+  try {
+    const res = await fetch(`/api/peer-comparison?ticker=${ticker}&period=${currentPeriod}&mock=${isMock}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    peerChart = renderRelativeChart('peer-chart', peerChart, data.relative_performance);
+    renderComparisonTable('peer-table', data.comparison_table);
+  } catch (e) { console.warn('Peer comparison failed:', e); }
+}
+
+async function loadWatchlistComparison() {
+  if (!watchlist.length) return;
+  try {
+    const res = await fetch(`/api/watchlist-comparison?tickers=${watchlist.join(',')}&period=${currentPeriod}&mock=${isMock}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    wlPerfChart = renderRelativeChart('watchlist-perf-chart', wlPerfChart, data.relative_performance);
+    renderComparisonTable('watchlist-table', data.comparison_table);
+  } catch (e) { console.warn('Watchlist comparison failed:', e); }
+}
+
+// ── Render: stock screener ───────────────────────────────────────────────────
+async function loadScreener() {
+  try {
+    const res = await fetch(`/api/stock-screener?mock=${isMock}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    renderScreenerTable(data);
+  } catch (e) { console.warn('Screener failed:', e); }
+}
+
+function renderScreenerTable(data) {
+  document.getElementById('screener-updated').textContent = data.last_updated
+    ? `最後更新：${data.last_updated.slice(0,10)}　共 ${data.total_stocks} 支`
+    : '';
+
+  const picks = data.top_picks || [];
+  if (!picks.length) {
+    document.getElementById('screener-table').innerHTML = '<div class="text-slate-500 text-sm text-center py-6">無篩選結果</div>';
+    return;
+  }
+
+  document.getElementById('screener-table').innerHTML = `
+    <table class="w-full text-xs">
+      <thead><tr class="text-slate-500 border-b border-slate-700">
+        <th class="py-2 px-2 text-left font-medium w-10">#</th>
+        <th class="py-2 px-2 text-left font-medium">代號</th>
+        <th class="py-2 px-2 text-left font-medium">名稱</th>
+        <th class="py-2 px-2 text-right font-medium">評分</th>
+        <th class="py-2 px-2 text-right font-medium">收盤價</th>
+        <th class="py-2 px-2 text-right font-medium">漲跌%</th>
+        <th class="py-2 px-2 text-right font-medium">P/E</th>
+        <th class="py-2 px-2 text-right font-medium">殖利率</th>
+        <th class="py-2 px-2 text-right font-medium">成交量(張)</th>
+      </tr></thead>
+      <tbody>${picks.map(p => {
+        const chgColor = p.change_pct >= 0 ? 'text-green-400' : 'text-red-400';
+        const scoreColor = p.score >= 80 ? '#16a34a' : p.score >= 60 ? '#22c55e' : '#f59e0b';
+        const sym = p.symbol.replace('.TW','');
+        return `<tr class="border-b border-slate-700/50 hover:bg-slate-700/30 cursor-pointer" onclick="switchToStock('${p.symbol}')">
+          <td class="py-2 px-2 text-slate-500">${p.rank}</td>
+          <td class="py-2 px-2 font-mono font-bold text-slate-200">${sym}</td>
+          <td class="py-2 px-2 text-slate-300">${p.name}</td>
+          <td class="py-2 px-2 text-right font-bold tabular-nums" style="color:${scoreColor}">${p.score}</td>
+          <td class="py-2 px-2 text-right tabular-nums text-slate-200">$${p.close}</td>
+          <td class="py-2 px-2 text-right tabular-nums ${chgColor}">${p.change_pct>=0?'+':''}${p.change_pct}%</td>
+          <td class="py-2 px-2 text-right tabular-nums">${p.pe??'–'}</td>
+          <td class="py-2 px-2 text-right tabular-nums">${p.yield_pct!=null?p.yield_pct+'%':'–'}</td>
+          <td class="py-2 px-2 text-right tabular-nums text-slate-400">${fmtVol(p.volume*1000)}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`;
+}
+
 // ── Utilities ────────────────────────────────────────────────────────────────
 function fmtCap(n){if(!n)return'–';if(n>=1e12)return`$${(n/1e12).toFixed(2)}T`;if(n>=1e9)return`$${(n/1e9).toFixed(2)}B`;if(n>=1e6)return`$${(n/1e6).toFixed(0)}M`;return`$${n.toLocaleString()}`}
 function fmtVol(v){if(v>=1e6)return(v/1e6).toFixed(1)+'M';if(v>=1e3)return(v/1e3).toFixed(0)+'K';return String(v)}
@@ -785,6 +964,7 @@ document.addEventListener('DOMContentLoaded', () => {
   showState('dashboard');
   analyze();
   refreshWatchlist();
+  loadScreener();
 });
 </script>
 

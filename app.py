@@ -17,7 +17,10 @@ from fastapi.staticfiles import StaticFiles
 
 import logging
 
-from mock_data import get_mock_response, get_mock_batch_quotes, get_mock_chart_data
+from mock_data import (
+    get_mock_response, get_mock_batch_quotes, get_mock_chart_data,
+    get_mock_peer_comparison, get_mock_watchlist_comparison, get_mock_screener,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +139,65 @@ async def get_stock_insights(
         "score": score,
         "commentary": commentary,
     }
+
+
+# ── Peer comparison ───────────────────────────────────────────────────────────
+@app.get("/api/peer-comparison")
+async def get_peer_comparison(
+    ticker: str = Query(..., min_length=1, max_length=10),
+    period: str = Query("3M"),
+    mock: bool = Query(True),
+) -> dict:
+    ticker = _normalize_ticker(ticker)
+    if period not in VALID_PERIODS:
+        raise HTTPException(status_code=400, detail=f"Invalid period. Choose from: {VALID_PERIODS}")
+
+    if mock:
+        return get_mock_peer_comparison(ticker, period)
+
+    try:
+        from stock_fetcher import build_peer_comparison
+        return await asyncio.to_thread(build_peer_comparison, ticker, period)
+    except Exception as exc:
+        logger.exception("Peer comparison error for %s", ticker)
+        raise HTTPException(status_code=502, detail="Service temporarily unavailable") from exc
+
+
+# ── Watchlist comparison ──────────────────────────────────────────────────────
+@app.get("/api/watchlist-comparison")
+async def get_watchlist_comparison(
+    tickers: str = Query(..., description="Comma-separated tickers"),
+    period: str = Query("3M"),
+    mock: bool = Query(True),
+) -> dict:
+    raw_list = [t.strip() for t in tickers.split(",") if t.strip()]
+    if not raw_list or len(raw_list) > 20:
+        raise HTTPException(status_code=400, detail="Provide 1-20 tickers")
+    normalized = [_normalize_ticker(t) for t in raw_list]
+
+    if mock:
+        return get_mock_watchlist_comparison(normalized, period)
+
+    try:
+        from stock_fetcher import build_watchlist_comparison
+        return await asyncio.to_thread(build_watchlist_comparison, normalized, period)
+    except Exception as exc:
+        logger.exception("Watchlist comparison error")
+        raise HTTPException(status_code=502, detail="Service temporarily unavailable") from exc
+
+
+# ── Stock screener ────────────────────────────────────────────────────────────
+@app.get("/api/stock-screener")
+async def get_stock_screener(mock: bool = Query(True)) -> dict:
+    if mock:
+        return get_mock_screener()
+
+    try:
+        from stock_fetcher.tw_market import get_screener_results
+        return await asyncio.to_thread(get_screener_results)
+    except Exception as exc:
+        logger.exception("Stock screener error")
+        raise HTTPException(status_code=502, detail="Service temporarily unavailable") from exc
 
 
 # ── Chart only (for period switching — no news/gemini/fundamentals) ────────────

@@ -313,3 +313,118 @@ def _build_generic(ticker: str, period: str) -> dict:
         "score": score,
         "commentary": "技術面與基本面訊號交織，無催化劑新聞。短期策略建議：觀望為主。",
     }
+
+
+# ── Mock peer comparison ──────────────────────────────────────────────────────
+
+_MOCK_PEERS = {
+    "AAPL": ["MSFT", "GOOGL", "META"],
+    "TSLA": ["F", "GM", "RIVN"],
+    "NVDA": ["AMD", "INTC", "AVGO"],
+}
+
+def _mock_relative_perf(symbols: list[str], seed: str, days: int = 60) -> dict:
+    rng = random.Random(seed)
+    labels = []
+    d = date(2026, 5, 21) - timedelta(days=days)
+    while d <= date(2026, 5, 21):
+        if d.weekday() < 5:
+            labels.append(str(d)[5:])
+        d += timedelta(days=1)
+    series = {}
+    for sym in symbols:
+        r = random.Random(f"{seed}-{sym}")
+        val = 100.0
+        points = []
+        for _ in labels:
+            val *= (1 + r.gauss(0.001, 0.015))
+            points.append(round(val, 2))
+        series[sym] = points
+    return {"labels": labels, "series": series}
+
+
+def _mock_comparison_row(symbol: str, is_target=False, is_index=False) -> dict:
+    rng = random.Random(symbol)
+    return {
+        "symbol": symbol,
+        "pe": round(rng.uniform(10, 60), 1),
+        "roe": round(rng.uniform(5, 50), 1),
+        "margin": round(rng.uniform(5, 35), 1),
+        "mcap": int(rng.uniform(50e9, 4e12)),
+        "return_period": round(rng.uniform(-10, 25), 2),
+        "yield": round(rng.uniform(0, 4), 2),
+        "beta": round(rng.uniform(0.5, 2.5), 2),
+        "is_target": is_target,
+        "is_index": is_index,
+        "error": None,
+    }
+
+
+def get_mock_peer_comparison(ticker: str, period: str = "3M") -> dict:
+    peers = _MOCK_PEERS.get(ticker, ["MSFT", "GOOGL", "META"])
+    index = "0050.TW" if ".TW" in ticker else "SPY"
+    all_syms = [ticker] + peers + [index]
+
+    table = []
+    for sym in all_syms:
+        table.append(_mock_comparison_row(sym, is_target=(sym == ticker), is_index=(sym == index)))
+
+    perf = _mock_relative_perf(all_syms, f"peer-{ticker}-{period}")
+
+    return {
+        "symbol": ticker,
+        "peers": peers,
+        "index": index,
+        "comparison_table": table,
+        "relative_performance": perf,
+    }
+
+
+def get_mock_watchlist_comparison(tickers: list[str], period: str = "3M") -> dict:
+    tw_count = sum(1 for t in tickers if ".TW" in t)
+    index = "0050.TW" if tw_count > len(tickers) / 2 else "SPY"
+    all_syms = tickers + [index]
+
+    table = [_mock_comparison_row(sym, is_index=(sym == index)) for sym in all_syms]
+    perf = _mock_relative_perf(all_syms, f"wl-{','.join(tickers)}-{period}")
+
+    return {
+        "tickers": tickers,
+        "index": index,
+        "comparison_table": table,
+        "relative_performance": perf,
+    }
+
+
+# ── Mock stock screener ───────────────────────────────────────────────────────
+
+_MOCK_SCREENER_STOCKS = [
+    {"rank": 1,  "symbol": "2330.TW", "name": "台積電",   "score": 87, "close": 2380, "change_pct": 1.21, "pe": 32.3, "yield_pct": 1.02, "volume": 45678},
+    {"rank": 2,  "symbol": "2454.TW", "name": "聯發科",   "score": 83, "close": 1890, "change_pct": 2.15, "pe": 18.5, "yield_pct": 2.31, "volume": 12345},
+    {"rank": 3,  "symbol": "3661.TW", "name": "世芯-KY",  "score": 79, "close": 2650, "change_pct": 3.42, "pe": 25.1, "yield_pct": 0.45, "volume": 5678},
+    {"rank": 4,  "symbol": "2881.TW", "name": "富邦金",   "score": 76, "close": 92.5, "change_pct": 0.87, "pe": 12.1, "yield_pct": 4.52, "volume": 34567},
+    {"rank": 5,  "symbol": "2382.TW", "name": "廣達",     "score": 75, "close": 345,  "change_pct": 1.89, "pe": 15.8, "yield_pct": 3.21, "volume": 23456},
+    {"rank": 6,  "symbol": "2317.TW", "name": "鴻海",     "score": 74, "close": 210,  "change_pct": 0.48, "pe": 11.2, "yield_pct": 5.12, "volume": 67890},
+    {"rank": 7,  "symbol": "3711.TW", "name": "日月光投控","score": 73, "close": 178,  "change_pct": 1.15, "pe": 14.5, "yield_pct": 3.45, "volume": 18234},
+    {"rank": 8,  "symbol": "2308.TW", "name": "台達電",   "score": 72, "close": 415,  "change_pct": -0.24,"pe": 28.3, "yield_pct": 1.89, "volume": 9876},
+    {"rank": 9,  "symbol": "2886.TW", "name": "兆豐金",   "score": 71, "close": 52.8, "change_pct": 0.57, "pe": 15.2, "yield_pct": 5.68, "volume": 45123},
+    {"rank": 10, "symbol": "2303.TW", "name": "聯電",     "score": 70, "close": 62.3, "change_pct": 2.46, "pe": 9.8,  "yield_pct": 6.12, "volume": 56789},
+    {"rank": 11, "symbol": "1301.TW", "name": "台塑",     "score": 69, "close": 52.1, "change_pct": -0.57,"pe": 22.1, "yield_pct": 4.81, "volume": 12345},
+    {"rank": 12, "symbol": "2891.TW", "name": "中信金",   "score": 68, "close": 33.8, "change_pct": 1.04, "pe": 13.5, "yield_pct": 5.32, "volume": 78901},
+    {"rank": 13, "symbol": "2412.TW", "name": "中華電",   "score": 67, "close": 132,  "change_pct": 0.15, "pe": 27.8, "yield_pct": 3.79, "volume": 8765},
+    {"rank": 14, "symbol": "3008.TW", "name": "大立光",   "score": 66, "close": 2180, "change_pct": 1.86, "pe": 19.4, "yield_pct": 2.98, "volume": 1234},
+    {"rank": 15, "symbol": "2884.TW", "name": "玉山金",   "score": 65, "close": 31.2, "change_pct": 0.65, "pe": 14.8, "yield_pct": 4.17, "volume": 34567},
+    {"rank": 16, "symbol": "2357.TW", "name": "華碩",     "score": 64, "close": 580,  "change_pct": 2.29, "pe": 12.9, "yield_pct": 5.45, "volume": 6789},
+    {"rank": 17, "symbol": "1303.TW", "name": "南亞",     "score": 63, "close": 45.6, "change_pct": -1.08,"pe": 35.2, "yield_pct": 3.95, "volume": 23456},
+    {"rank": 18, "symbol": "2882.TW", "name": "國泰金",   "score": 62, "close": 68.9, "change_pct": 0.73, "pe": 11.8, "yield_pct": 4.63, "volume": 45678},
+    {"rank": 19, "symbol": "5871.TW", "name": "中租-KY",  "score": 61, "close": 265,  "change_pct": 1.53, "pe": 10.5, "yield_pct": 6.32, "volume": 7890},
+    {"rank": 20, "symbol": "2379.TW", "name": "瑞昱",     "score": 60, "close": 520,  "change_pct": 0.97, "pe": 21.3, "yield_pct": 2.15, "volume": 5432},
+]
+
+
+def get_mock_screener() -> dict:
+    return {
+        "last_updated": "2026-06-04T14:30:00",
+        "total_stocks": 2487,
+        "top_picks": _MOCK_SCREENER_STOCKS,
+    }
