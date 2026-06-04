@@ -1,6 +1,6 @@
 # P1-5 同業比較、自選股比較、潛力股篩選
 
-> 版本：1.0
+> 版本：2.0
 > 最後更新：2026-06-05
 
 ## 概述
@@ -13,38 +13,108 @@
 
 ---
 
+## 四套評分系統的差異與適用場景
+
+本專案中有四個地方涉及「評分」或「比較」，各自的設計目的、評分方式、資料來源不同：
+
+### 對照表
+
+| | 綜合投資評分 | 同業比較 | 自選股比較 | 潛力股篩選 |
+|---|---|---|---|---|
+| **解決什麼問題** | 這支股票值得買嗎？ | 跟同產業比是強是弱？ | 我的持股哪支最好？ | 全市場哪支最值得關注？ |
+| **比較對象** | 單一股票 vs 絕對標準 | 同產業 3-4 支 | Watchlist 全部 | 全台 ~2,500 支 |
+| **評分方式** | 絕對閾值（P/E<15=75 分） | 簡化基本面分數 | 簡化基本面分數 | 相對百分位排名 |
+| **技術面** | ✅ RSI, MACD, 均線, BB | ❌ | ❌ | ✅ 動能（漲跌幅） |
+| **基本面** | ✅ P/E, ROE, 營收, Margin, 殖利率 | ✅ P/E, ROE, Margin, 殖利率 | ✅ 同左 | ✅ P/E, P/B, 殖利率 |
+| **AI 情緒** | ✅ Gemini 分析 | ❌ | ❌ | ❌ |
+| **資料來源** | yfinance + Gemini | yfinance | yfinance | TWSE/TPEX 官方 |
+| **規格文件** | `docs/composite-score.md` | 本文件 | 本文件 | 本文件 |
+
+### 為什麼不統一？
+
+1. **資料來源不同**：潛力股篩選用 TWSE/TPEX 官方 API（批次快速），個股分析用 yfinance（細節多）。兩套 API 回傳的欄位不同，無法用同一套閾值。
+
+2. **使用場景不同**：
+   - 看單一股票時：「P/E 32 是高還是低？」→ 用**絕對閾值**有意義
+   - 從 2,500 支中篩選時：「誰的 P/E 最低？」→ 用**百分位排名**才公平
+   - 跟同業比時：「P/E 33 在科技股中算貴嗎？」→ 用**橫向比較**最直觀
+
+3. **效能限制**：對 2,500 支股票全部計算 RSI/MACD 需要 yfinance 逐支抓歷史，耗時數小時，不實際。
+
+---
+
 ## 功能 A：同業比較
 
-### 同業映射表
-
-維護一份主要股票的 peers mapping：
+### 同業匹配邏輯（三層 fallback）
 
 ```
-AAPL → [MSFT, GOOGL, META]         # 科技巨頭
-TSLA → [F, GM, RIVN]               # 車廠
-NVDA → [AMD, INTC, AVGO]           # 半導體
-2330.TW → [2454.TW, 3711.TW, 2303.TW]  # 台灣半導體
+Step 1: 查硬編碼映射表 PEER_MAP
+        → 命中？回傳（如 AAPL → [MSFT, GOOGL, META]）
+
+Step 2: 查 TWSE 產業分類（台股限定）
+        → 從 tw_market_snapshot.json 中找同 industry 的股票
+        → 按成交量排序，取前 3 名（排除自己）
+        → 例：廣達(2382) = 電腦及週邊設備業 → [華碩(2357), 宏碁(2353), 仁寶(2324)]
+
+Step 3: 都沒命中
+        → 回傳空陣列，前端只顯示該股 + 大盤指數
 ```
 
-未命中的股票：從 yfinance 的 `sector` 欄位找同 sector 的知名股票。
+### 硬編碼映射表（主要股票）
+
+```
+# 美股
+AAPL  → [MSFT, GOOGL, META]       # 科技巨頭
+TSLA  → [F, GM, RIVN]             # 車廠
+NVDA  → [AMD, INTC, AVGO]         # 半導體
+AMZN  → [MSFT, GOOGL, AAPL]       # 科技平台
+
+# 台股
+2330  → [2454, 3711, 2303]         # 半導體
+2317  → [2382, 3231, 2354]         # 電子代工
+2881  → [2882, 2884, 2886]         # 金融
+2308  → [2301, 2357, 2395]         # 電子
+```
 
 ### 比較指標
 
-| 指標 | 來源 |
-|------|------|
-| P/E (TTM) | fundamentals.valuation |
-| ROE | fundamentals.profitability |
-| Profit Margin | fundamentals.profitability |
-| 市值 (Market Cap) | latest_quote |
-| 1M / 3M 漲跌幅 | kline 計算 |
-| 殖利率 | fundamentals.dividend |
-| Beta | fundamentals.summary |
+| 指標 | 來源 | 比較用途 |
+|------|------|---------|
+| **基本面分數** | `scoring.py` 基本面子計算 | 快速判斷誰的基本面最好 |
+| P/E (TTM) | yfinance info | 估值比較 |
+| ROE | yfinance info | 獲利效率 |
+| Profit Margin | yfinance info | 成本控制 |
+| 市值 (Market Cap) | yfinance info | 規模量級 |
+| 區間報酬率 | kline 首尾價差 | 股價表現 |
+| 殖利率 | yfinance info | 配息能力 |
+| Beta | yfinance info | 波動風險 |
+
+### 基本面分數計算（同業/自選股共用）
+
+同業比較和自選股比較中的「評分」欄位，使用 `scoring.py` 的基本面子分數計算：
+
+```python
+score = _score_fundamental(fundamentals)
+# 包含：P/E (25%) + ROE (20%) + 營收趨勢 (25%) + Margin (15%) + 殖利率 (15%)
+```
+
+> 注意：這裡不計算技術面和情緒面分數，因為比較表中沒有足夠的資料（RSI/MACD/催化劑）。
+> 這是一個「簡化版」分數，只反映基本面強弱，與綜合投資評分中的「基本面子維度」一致。
 
 ### 相對走勢圖
 
 - 起點標準化為 100%（第一天收盤價 = 100）
-- 同業前三名 + 大盤指數（美股 SPY、台股 0050.TW）
-- 使用 Chart.js 折線圖，不同顏色區分
+- 同業 + 大盤指數（美股 SPY、台股 0050.TW）
+- 使用 Chart.js 折線圖，大盤用虛線區分
+
+### 大盤指數選擇邏輯
+
+| 股票市場 | 大盤指數 |
+|---------|---------|
+| `.TW` 台灣 | 0050.TW（元大台灣50 ETF） |
+| `.SS` 上海 | 000300.SS（滬深300） |
+| `.SZ` 深圳 | 000300.SS（滬深300） |
+| 其他（美股等） | SPY（S&P 500 ETF） |
 
 ### API
 
@@ -57,8 +127,14 @@ Response:
   "peers": ["MSFT", "GOOGL", "META"],
   "index": "SPY",
   "comparison_table": [
-    { "symbol": "AAPL", "pe": 33.2, "roe": 157, "margin": 26.3, "mcap": 4.4e12, "return_1m": 5.2, "return_3m": 12.1, "yield": 0.49, "beta": 1.24, "is_target": true },
-    { "symbol": "MSFT", ... },
+    {
+      "symbol": "AAPL",
+      "score": 64,
+      "pe": 33.2, "roe": 157, "margin": 26.3,
+      "mcap": 4.4e12, "return_period": 12.1,
+      "yield": 0.49, "beta": 1.24,
+      "is_target": true, "is_index": false
+    },
     ...
   ],
   "relative_performance": {
@@ -66,7 +142,6 @@ Response:
     "series": {
       "AAPL": [100, 101.2, 103.5, ...],
       "MSFT": [100, 100.8, 102.1, ...],
-      "GOOGL": [100, 99.5, 101.2, ...],
       "SPY": [100, 100.3, 100.8, ...]
     }
   }
@@ -81,22 +156,18 @@ Response:
 
 | | 同業比較 | 自選股比較 |
 |---|---------|----------|
-| 股票來源 | 自動帶出同產業 peers | 使用者的 Watchlist |
+| 股票來源 | 自動匹配同產業 peers | 使用者的 Watchlist |
 | 數量 | 3-4 支 + 大盤 | Watchlist 全部 + 大盤 |
-| 大盤選擇 | 依主要市場（SPY/0050.TW） | 依 Watchlist 組成自動判斷 |
+| 大盤選擇 | 依目標股票市場 | 依 Watchlist 多數股票市場 |
+| 評分欄位 | ✅ 基本面分數 | ✅ 基本面分數 |
+| 用途 | 跟同業比是否領先 | 自選股之間誰最強 |
 
 ### API
 
 ```
 GET /api/watchlist-comparison?tickers=AAPL,TSLA,NVDA&period=3M&mock=true
 
-Response:
-{
-  "tickers": ["AAPL", "TSLA", "NVDA"],
-  "index": "SPY",
-  "comparison_table": [ ... ],  // 同上格式
-  "relative_performance": { ... }  // 同上格式
-}
+Response: （格式同同業比較）
 ```
 
 ---
@@ -105,47 +176,58 @@ Response:
 
 ### 資料來源
 
-| API | URL | 回傳內容 |
-|-----|-----|---------|
-| TWSE 每日收盤 | `https://www.twse.com.tw/exchangeReport/MI_INDEX` | 全上市股票收盤價、漲跌、成交量 |
-| TWSE 本益比 | `https://www.twse.com.tw/exchangeReport/BWIBBU_d` | P/E、殖利率、P/B |
-| TPEX 每日收盤 | `https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php` | 全上櫃股票收盤價 |
-| TPEX 本益比 | `https://www.tpex.org.tw/web/stock/aftertrading/peratio_analysis/pera_result.php` | P/E、殖利率、P/B |
+| API | 回傳內容 | 用途 |
+|-----|---------|------|
+| TWSE 每日收盤 | 全上市股票收盤價、漲跌、成交量、**產業分類** | 價格 + 動能 + 同業匹配 |
+| TWSE 本益比 | P/E、殖利率、**P/B** | 價值 + 品質 |
+| TPEX 每日收盤 | 全上櫃股票收盤價、漲跌、成交量 | 同上 |
+| TPEX 本益比 | P/E、殖利率、**P/B** | 同上 |
 
 ### 前置篩選（排除不適合的股票）
 
-- 排除日均成交量 < 500 張
-- 排除特別股、ETF、權證
-- 排除近 5 日無交易紀錄
+- 排除日均成交量 < 500 張（流動性不足）
+- 排除代號非 4 碼純數字（特別股、ETF、權證）
+- 排除收盤價為 0 或無成交紀錄
 
 ### 多因子評分模型
 
-| 因子 | 權重 | 計算方式 |
-|------|------|---------|
-| 動能 (Momentum) | 30% | 近 1 月漲幅排名百分位 |
-| 價值 (Value) | 20% | P/E 百分位（越低越好，反轉計算） |
-| 品質 (Quality) | 25% | 殖利率排名百分位 |
-| 規模溢酬 (Size) | 10% | 市值百分位 |
-| 波動 (Volatility) | 15% | 近 1 月振幅排名（越低越好） |
+| 因子 | 權重 | 計算方式 | 設計理由 |
+|------|------|---------|---------|
+| 動能 (Momentum) | 25% | 當日漲跌幅百分位排名（越高越好） | 追強勢股 |
+| 價值 (Value) | 15% | P/E 百分位排名（越低越好，反轉） | 找被低估的 |
+| 淨值比 (PB Value) | 10% | P/B 百分位排名（越低越好，反轉） | 強化價值篩選 |
+| 品質 (Quality) | 20% | 殖利率百分位排名（越高越好） | 找獲利穩定的 |
+| 規模 (Size) | 10% | 成交量百分位排名（越高越好） | 確保流動性 |
+| 低波動 (Low Vol) | 10% | 絕對漲跌幅百分位（越低越好，反轉） | 偏好穩定 |
+| 量價配合 (Vol-Price) | 10% | 漲跌方向 × 成交量排名 | 放量上漲加分 |
 
-> 每個因子都轉換為 0-100 的百分位排名後加權合成。
+> **百分位排名**：每個因子都轉換為 0-100。例如 P/E 排名百分位 80 = 這支股票的 P/E 比 80% 的股票都低（便宜）。
+
+### 與綜合投資評分的差異
+
+| | 綜合投資評分 | 潛力股篩選 |
+|---|---|---|
+| **評分方式** | 絕對閾值 | 百分位排名 |
+| **例子** | P/E < 15 → 75 分（不管別人） | P/E 排名前 20% → 80 分（跟全市場比） |
+| **技術面** | RSI, MACD, 均線, 布林 | 漲跌幅（動能代理指標） |
+| **基本面** | P/E, ROE, 營收趨勢, Margin, 殖利率 | P/E, P/B, 殖利率 |
+| **AI 情緒** | ✅ 佔 25% | ❌ 不包含 |
+| **適用場景** | 深入分析單一股票 | 快速掃描全市場 |
 
 ### 資料新鮮度檢查
 
-```python
-def is_stale(snapshot_date: str) -> bool:
-    """
-    判斷快照是否過期：
-    - 交易日 14:00 後：快照日期必須是今天
-    - 交易日 14:00 前：快照日期必須是上一個交易日
-    - 週末/假日：快照日期必須是最近的交易日
-    """
+```
+判斷快照是否過期：
+- 交易日 14:00 後：快照日期必須是今天
+- 交易日 14:00 前：快照日期必須是上一個交易日
+- 週末/假日：快照日期必須是最近的交易日
 ```
 
 ### 儲存策略
 
 - 檔案路徑：`data/tw_market_snapshot.json`
 - 格式：`{ "date": "2026-06-04", "updated_at": "...", "stocks": [...] }`
+- 每筆股票包含：`symbol, name, close, change, change_pct, volume, market, industry, pe, yield_pct, pb`
 - 啟動時載入記憶體，背景更新不阻塞請求
 
 ### API
@@ -166,9 +248,17 @@ Response:
       "close": 2380,
       "change_pct": 1.2,
       "pe": 32.3,
-      "yield": 1.02,
+      "yield_pct": 1.02,
       "volume": 45678,
-      "factors": { "momentum": 92, "value": 45, "quality": 95, "size": 99, "volatility": 78 }
+      "factors": {
+        "momentum": 92,
+        "value": 45,
+        "pb_value": 38,
+        "quality": 95,
+        "size": 99,
+        "low_vol": 78,
+        "vol_price": 85
+      }
     },
     ...
   ]
@@ -183,18 +273,7 @@ Response:
 
 ---
 
-## 預計改動檔案
+## 免責聲明
 
-```
-新增：
-  docs/peer-comparison.md              ← 本文件
-  stock_fetcher/peers.py               ← 同業映射 + 比較資料
-  stock_fetcher/tw_market.py           ← TWSE/TPEX 抓取 + 篩選引擎
-  data/                                ← 快照目錄（程式自動產生）
-
-修改：
-  stock_fetcher/__init__.py            ← 匯出新模組
-  app.py                               ← 三個新 endpoint
-  mock_data.py                         ← 三個功能的 mock 資料
-  frontend/index.html                  ← 比較 UI + 篩選 UI
-```
+> 以上僅為量化篩選與分析結果，不構成投資建議，投資決策請自行評估風險。
+> 評分系統基於歷史數據與規則模型，無法預測未來市場走勢。

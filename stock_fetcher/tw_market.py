@@ -30,11 +30,13 @@ SCREENER_CONFIG = {
     "min_volume": 500,       # 日均成交量 >= 500 張
     "top_n": 20,             # 回傳前 N 名
     "weights": {
-        "momentum": 0.30,
-        "value":    0.20,
-        "quality":  0.25,
-        "size":     0.10,
-        "volatility": 0.15,
+        "momentum":  0.25,   # 漲跌幅百分位
+        "value":     0.15,   # P/E 百分位（低=好）
+        "pb_value":  0.10,   # P/B 百分位（低=好）
+        "quality":   0.20,   # 殖利率百分位
+        "size":      0.10,   # 成交量百分位
+        "low_vol":   0.10,   # 低波動（絕對漲跌幅，低=好）
+        "vol_price": 0.10,   # 量價配合（放量上漲加分）
     },
 }
 
@@ -160,8 +162,36 @@ def _is_stale(snapshot_date: str) -> bool:
 _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 
+def find_industry_peers(symbol: str, top_n: int = 3) -> list[str]:
+    """Find same-industry peers from TW market snapshot, sorted by volume."""
+    snapshot = _get_snapshot()
+    if not snapshot:
+        return []
+
+    stocks = snapshot.get("stocks", [])
+    target = None
+    for s in stocks:
+        if s["symbol"] == symbol:
+            target = s
+            break
+
+    if not target or not target.get("industry"):
+        return []
+
+    industry = target["industry"]
+    candidates = [
+        s for s in stocks
+        if s.get("industry") == industry
+        and s["symbol"] != symbol
+        and s.get("volume", 0) >= 100  # minimum liquidity
+    ]
+
+    candidates.sort(key=lambda s: s.get("volume", 0), reverse=True)
+    return [s["symbol"] for s in candidates[:top_n]]
+
+
 def _fetch_twse_daily() -> list[dict]:
-    """Fetch TWSE (上市) daily closing data."""
+    """Fetch TWSE (上市) daily closing data with industry classification."""
     today_str = date.today().strftime("%Y%m%d")
     url = f"https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date={today_str}&type=ALLBUT0999"
 
@@ -173,13 +203,22 @@ def _fetch_twse_daily() -> list[dict]:
             logger.warning("TWSE daily returned non-OK: %s", data.get("stat"))
             return []
 
+        # Build industry mapping from the grouped structure
+        industry_map: dict[str, str] = {}
+        for group in data.get("groups", []):
+            industry_name = group.get("title", "").strip()
+            for row in group.get("data", []):
+                if row and len(row) > 0:
+                    code = str(row[0]).strip()
+                    if code.isdigit():
+                        industry_map[code] = industry_name
+
         stocks = []
         for table in data.get("data9", data.get("data8", [])):
             try:
                 code = table[0].strip()
                 name = table[1].strip()
 
-                # Skip ETFs, warrants, special codes
                 if not code.isdigit() or len(code) != 4:
                     continue
 
@@ -198,6 +237,7 @@ def _fetch_twse_daily() -> list[dict]:
                     "change_pct": round((change / (close - change)) * 100, 2) if change and close != change else 0,
                     "volume": int(volume),
                     "market": "TWSE",
+                    "industry": industry_map.get(code, ""),
                 })
             except (IndexError, ValueError):
                 continue
@@ -318,48 +358,57 @@ def _fetch_tpex_pe() -> dict[str, dict]:
 # ── Multi-factor ranking ──────────────────────────────────────────────────────
 
 def _rank_stocks(stocks: list[dict]) -> list[dict]:
-    """Apply multi-factor ranking to produce top picks."""
-    # Filter minimum volume
+    """Apply 7-factor ranking to produce top picks."""
     min_vol = SCREENER_CONFIG["min_volume"]
     eligible = [s for s in stocks if s.get("volume", 0) >= min_vol]
 
     if not eligible:
         return []
 
-    # Compute percentile ranks for each factor
     w = SCREENER_CONFIG["weights"]
 
-    # Momentum: change_pct (higher = better)
+    # Factor 1: Momentum — change_pct (higher = better)
     _assign_percentile(eligible, "change_pct", "momentum_rank", reverse=False)
 
-    # Value: P/E (lower = better)
+    # Factor 2: Value — P/E (lower = better)
     _assign_percentile(eligible, "pe", "value_rank", reverse=True)
 
-    # Quality: yield (higher = better)
+    # Factor 3: PB Value — P/B (lower = better)
+    _assign_percentile(eligible, "pb", "pb_value_rank", reverse=True)
+
+    # Factor 4: Quality — yield (higher = better)
     _assign_percentile(eligible, "yield_pct", "quality_rank", reverse=False)
 
-    # Size: volume as proxy (higher = better, more liquid)
+    # Factor 5: Size — volume (higher = better, more liquid)
     _assign_percentile(eligible, "volume", "size_rank", reverse=False)
 
-    # Volatility: abs(change_pct) as proxy (lower = better)
+    # Factor 6: Low Volatility — abs(change_pct) (lower = better)
     for s in eligible:
         s["_abs_change"] = abs(s.get("change_pct", 0))
-    _assign_percentile(eligible, "_abs_change", "volatility_rank", reverse=True)
+    _assign_percentile(eligible, "_abs_change", "low_vol_rank", reverse=True)
 
-    # Composite score
+    # Factor 7: Volume-Price alignment — bullish volume signal
+    for s in eligible:
+        chg = s.get("change_pct", 0)
+        vol = s.get("volume", 0)
+        # Positive change + high volume = strong signal
+        s["_vol_price"] = chg * (vol ** 0.5) if chg > 0 else chg * (vol ** 0.3)
+    _assign_percentile(eligible, "_vol_price", "vol_price_rank", reverse=False)
+
+    # Composite score (7 factors)
     for s in eligible:
         s["score"] = round(
             s.get("momentum_rank", 50) * w["momentum"]
             + s.get("value_rank", 50) * w["value"]
+            + s.get("pb_value_rank", 50) * w["pb_value"]
             + s.get("quality_rank", 50) * w["quality"]
             + s.get("size_rank", 50) * w["size"]
-            + s.get("volatility_rank", 50) * w["volatility"]
+            + s.get("low_vol_rank", 50) * w["low_vol"]
+            + s.get("vol_price_rank", 50) * w["vol_price"]
         )
 
-    # Sort by score descending
     eligible.sort(key=lambda s: s["score"], reverse=True)
 
-    # Build output
     result = []
     for rank, s in enumerate(eligible[:SCREENER_CONFIG["top_n"]], 1):
         result.append({
@@ -375,9 +424,11 @@ def _rank_stocks(stocks: list[dict]) -> list[dict]:
             "factors": {
                 "momentum": s.get("momentum_rank", 0),
                 "value": s.get("value_rank", 0),
+                "pb_value": s.get("pb_value_rank", 0),
                 "quality": s.get("quality_rank", 0),
                 "size": s.get("size_rank", 0),
-                "volatility": s.get("volatility_rank", 0),
+                "low_vol": s.get("low_vol_rank", 0),
+                "vol_price": s.get("vol_price_rank", 0),
             },
         })
 

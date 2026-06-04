@@ -327,7 +327,7 @@ const MA_COLORS = { ma5: '#f59e0b', ma10: '#3b82f6', ma20: '#a855f7', ma60: '#ec
 const BB_COLOR = '#06b6d4';
 
 // ── State ────────────────────────────────────────────────────────────────────
-let isMock = true;
+let isMock = localStorage.getItem('stock-insights-mock') !== 'false';  // default true, persist across reload
 let currentPeriod = '3M';
 let currentTicker = 'AAPL';
 let currentData = null;          // full API response (cached)
@@ -485,11 +485,20 @@ document.getElementById('overlay-chips').addEventListener('click', e => {
 // ── Mock toggle ──────────────────────────────────────────────────────────────
 function toggleMock() {
   isMock = !isMock;
+  localStorage.setItem('stock-insights-mock', String(isMock));
   document.getElementById('toggle-track').className = `w-10 h-5 rounded-full transition-colors duration-200 ${isMock ? 'bg-amber-500' : 'bg-slate-600'}`;
   document.getElementById('toggle-dot').className = `absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${isMock ? 'translate-x-5' : 'translate-x-0'}`;
   document.getElementById('mock-badge').className = `text-xs font-semibold px-2.5 py-1 rounded-full border ${isMock ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' : 'bg-slate-700 text-slate-500 border-slate-600'}`;
   document.getElementById('mock-badge').textContent = isMock ? 'MOCK' : 'LIVE';
-  refreshWatchlist();  // sync watchlist with new mode
+  refreshWatchlist();
+  loadScreener();
+}
+
+function syncMockUI() {
+  document.getElementById('toggle-track').className = `w-10 h-5 rounded-full transition-colors duration-200 ${isMock ? 'bg-amber-500' : 'bg-slate-600'}`;
+  document.getElementById('toggle-dot').className = `absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${isMock ? 'translate-x-5' : 'translate-x-0'}`;
+  document.getElementById('mock-badge').className = `text-xs font-semibold px-2.5 py-1 rounded-full border ${isMock ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' : 'bg-slate-700 text-slate-500 border-slate-600'}`;
+  document.getElementById('mock-badge').textContent = isMock ? 'MOCK' : 'LIVE';
 }
 
 // ── UI state helpers ─────────────────────────────────────────────────────────
@@ -853,7 +862,7 @@ function renderRelativeChart(canvasId, chartRef, perfData) {
 function renderComparisonTable(containerId, rows) {
   if (!rows || !rows.length) return;
   const el = document.getElementById(containerId);
-  const headers = ['代號','P/E','ROE','Margin','市值','報酬率','殖利率','Beta'];
+  const headers = ['代號','評分','P/E','ROE','Margin','市值','報酬率','殖利率','Beta'];
   el.innerHTML = `
     <table class="w-full text-xs">
       <thead><tr class="text-slate-500 border-b border-slate-700">
@@ -864,8 +873,11 @@ function renderComparisonTable(containerId, rows) {
         const highlight = r.is_target ? 'bg-blue-500/10 font-bold' : r.is_index ? 'text-slate-500 italic' : '';
         const retColor = (r.return_period||0) >= 0 ? 'text-green-400' : 'text-red-400';
         const sym = r.symbol.replace(/\.(TW|SS|SZ)$/,'');
+        const sc = r.score;
+        const scoreColor = sc!=null ? (sc>=61?'#22c55e':sc>=41?'#f59e0b':'#ef4444') : '';
         return `<tr class="${highlight} border-b border-slate-700/50 hover:bg-slate-700/30">
           <td class="py-1.5 px-2 font-mono">${sym}${r.is_index?' 📊':''}</td>
+          <td class="py-1.5 px-2 tabular-nums font-bold" style="color:${scoreColor}">${sc??'–'}</td>
           <td class="py-1.5 px-2 tabular-nums">${r.pe??'–'}</td>
           <td class="py-1.5 px-2 tabular-nums">${r.roe!=null?r.roe+'%':'–'}</td>
           <td class="py-1.5 px-2 tabular-nums">${r.margin!=null?r.margin+'%':'–'}</td>
@@ -961,6 +973,7 @@ function escHtml(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').rep
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  syncMockUI();  // restore LIVE/MOCK toggle from LocalStorage
   showState('dashboard');
   analyze();
   refreshWatchlist();

@@ -347,6 +347,7 @@ def _mock_comparison_row(symbol: str, is_target=False, is_index=False) -> dict:
     rng = random.Random(symbol)
     return {
         "symbol": symbol,
+        "score": rng.randint(35, 85),
         "pe": round(rng.uniform(10, 60), 1),
         "roe": round(rng.uniform(5, 50), 1),
         "margin": round(rng.uniform(5, 35), 1),

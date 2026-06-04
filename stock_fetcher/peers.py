@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import yfinance as yf
 
 from .cache import ttl_cache
+from .scoring import _score_fundamental
 from .utils import retry
 
 logger = logging.getLogger(__name__)
@@ -55,10 +56,30 @@ INDEX_MAP: dict[str, str] = {
 
 
 def get_peers(symbol: str) -> list[str]:
-    """Return peer tickers for a given symbol."""
+    """
+    Return peer tickers for a given symbol.
+    Three-layer fallback: hardcoded → TWSE industry → empty.
+    """
+    # Layer 1: hardcoded mapping
     if symbol in PEER_MAP:
         return PEER_MAP[symbol]
-    # Fallback: return empty, frontend will handle gracefully
+
+    # Layer 2: TWSE industry classification (TW stocks only)
+    if ".TW" in symbol:
+        try:
+            from .tw_market import find_industry_peers, _get_snapshot, _fetch_and_save_snapshot
+            # If snapshot doesn't exist yet, trigger a fetch
+            if _get_snapshot() is None:
+                logger.info("No TW market snapshot — triggering first fetch for peer lookup")
+                _fetch_and_save_snapshot()
+            industry_peers = find_industry_peers(symbol, top_n=3)
+            if industry_peers:
+                return industry_peers
+        except Exception as e:
+            logger.warning("Industry peer lookup failed for %s: %s", symbol, e)
+            pass
+
+    # Layer 3: no peers found
     return []
 
 
@@ -124,8 +145,21 @@ def fetch_comparison_data(symbols: tuple[str, ...], period: str = "3M") -> dict:
             # Fundamentals
             info = ticker.info or {}
 
+            # Compute fundamental score from available data
+            fund_data = {
+                "valuation": {"pe_ratio": _safe_round(info.get("trailingPE"))},
+                "profitability": {
+                    "roe": _safe_round(_pct(info.get("returnOnEquity"))),
+                    "profit_margin": _safe_round(_pct(info.get("profitMargins"))),
+                },
+                "dividend": {"dividend_yield": _safe_round(_pct(info.get("dividendYield")))},
+                "quarterly_financials": [],
+            }
+            fund_score = _score_fundamental(fund_data)
+
             comparison_table.append({
                 "symbol": sym,
+                "score": fund_score["score"],
                 "pe": _safe_round(info.get("trailingPE")),
                 "roe": _safe_round(_pct(info.get("returnOnEquity"))),
                 "margin": _safe_round(_pct(info.get("profitMargins"))),
