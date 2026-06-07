@@ -1,43 +1,45 @@
 """
-Taiwan stock market screener — TWSE/TPEX bulk data fetch + multi-factor ranking.
+Taiwan stock market data layer.
 
-Data source: TWSE and TPEX official Open Data APIs.
-Stores daily snapshot in data/tw_market_snapshot.json.
+Responsibilities (separation of concerns):
+  - fetch_for_date(d): pure I/O — pull TWSE/TPEX data for a single date
+  - fetch_industry_mapping(): pure I/O — pull company-industry mapping
+  - get_screener_results(): business logic — rank stocks from DB
+  - find_industry_peers(symbol): business logic — peer lookup from DB
+
+All storage goes through stock_fetcher.tw_db (SQLite).
+Multi-day factors (momentum, MA, volatility) are computed from historical data.
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
-import threading
 import time
 from datetime import datetime, date, timedelta
-from pathlib import Path
 
 import requests
 
+from . import tw_db
+
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-SNAPSHOT_PATH = DATA_DIR / "tw_market_snapshot.json"
-
-_snapshot_cache: dict | None = None
-_snapshot_lock = threading.Lock()
-
 _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+# Polite delay between API calls to avoid IP throttling
+API_DELAY_SECONDS = 0.5
 
 # ── Screener config ───────────────────────────────────────────────────────────
 SCREENER_CONFIG = {
     "min_volume": 500,
     "top_n": 20,
     "weights": {
-        "momentum":  0.25,
-        "value":     0.15,
-        "pb_value":  0.10,
-        "quality":   0.20,
-        "size":      0.10,
-        "low_vol":   0.10,
-        "vol_price": 0.10,
+        "momentum_5d":  0.15,
+        "momentum_20d": 0.15,
+        "value":        0.15,
+        "pb_value":     0.10,
+        "quality":      0.15,
+        "volume_ratio": 0.10,
+        "ma_trend":     0.10,
+        "low_vol":      0.10,
     },
 }
 
@@ -58,167 +60,88 @@ INDUSTRY_NAMES = {
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def get_screener_results() -> dict:
-    snapshot = _get_snapshot()
-    if snapshot is None:
-        snapshot = _fetch_and_save_snapshot()
-    elif _is_stale(snapshot.get("date", "")):
-        threading.Thread(target=_fetch_and_save_snapshot, daemon=True).start()
-
-    if snapshot is None:
+    """Read latest snapshot from DB and rank stocks with multi-day factors."""
+    snapshot = tw_db.get_latest_snapshot()
+    if not snapshot:
         return {"last_updated": None, "total_stocks": 0, "top_picks": []}
 
-    stocks = snapshot.get("stocks", [])
-    ranked = _rank_stocks(stocks)
+    ranked = _rank_stocks_with_history(snapshot)
+    latest_date = tw_db.get_latest_date()
 
     return {
-        "last_updated": snapshot.get("updated_at"),
-        "total_stocks": len(stocks),
+        "last_updated": f"{latest_date}T00:00:00" if latest_date else None,
+        "total_stocks": len(snapshot),
         "top_picks": ranked[:SCREENER_CONFIG["top_n"]],
     }
 
 
 def find_industry_peers(symbol: str, top_n: int = 3) -> list[str]:
-    """Find same-industry peers from TW market snapshot, sorted by volume."""
-    snapshot = _get_snapshot()
-    if not snapshot:
-        return []
-
-    stocks = snapshot.get("stocks", [])
-    target = None
-    for s in stocks:
-        if s["symbol"] == symbol:
-            target = s
-            break
-
-    if not target or not target.get("industry"):
-        return []
-
-    industry = target["industry"]
-    candidates = [
-        s for s in stocks
-        if s.get("industry") == industry
-        and s["symbol"] != symbol
-        and s.get("volume", 0) >= 100
-    ]
-
-    candidates.sort(key=lambda s: s.get("volume", 0), reverse=True)
-    return [s["symbol"] for s in candidates[:top_n]]
+    """Find same-industry peers via DB lookup."""
+    return tw_db.find_peers_by_industry(symbol, top_n)
 
 
-# ── Snapshot management ───────────────────────────────────────────────────────
+def fetch_for_date(target_date: date) -> dict:
+    """
+    Fetch all TWSE+TPEX price + P/E data for a single date.
+    Returns: { "date": ..., "prices": [...], "trading_day": bool }
 
-def _get_snapshot() -> dict | None:
-    global _snapshot_cache
-    with _snapshot_lock:
-        if _snapshot_cache is not None:
-            return _snapshot_cache
+    A non-trading day (weekend/holiday) returns trading_day=False with empty prices.
+    Raises on network errors so caller can decide retry strategy.
+    """
+    if target_date.weekday() >= 5:
+        logger.info("Skipping weekend: %s", target_date)
+        return {"date": target_date.isoformat(), "prices": [], "trading_day": False}
 
-    if SNAPSHOT_PATH.exists():
-        try:
-            data = json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
-            with _snapshot_lock:
-                _snapshot_cache = data
-            logger.info("Loaded TW market snapshot from disk: %s", data.get("date"))
-            return data
-        except Exception as e:
-            logger.error("Failed to load snapshot: %s", e)
-    return None
+    twse_prices = _fetch_twse_daily_for_date(target_date)
+    time.sleep(API_DELAY_SECONDS)
+    tpex_prices = _fetch_tpex_daily_for_date(target_date)
+    time.sleep(API_DELAY_SECONDS)
+    twse_pe = _fetch_twse_pe_for_date(target_date)
+    time.sleep(API_DELAY_SECONDS)
+    tpex_pe = _fetch_tpex_pe_for_date(target_date)
 
+    pe_map = {**twse_pe, **tpex_pe}
+    all_prices = twse_prices + tpex_prices
 
-def _fetch_and_save_snapshot() -> dict | None:
-    global _snapshot_cache
-    logger.info("Fetching TW market data from TWSE/TPEX...")
+    if not all_prices:
+        # Likely a holiday
+        return {"date": target_date.isoformat(), "prices": [], "trading_day": False}
 
-    try:
-        # Step 1: get industry mapping for all listed companies
-        industry_map = _fetch_industry_mapping()
-        logger.info("Industry mapping: %d companies", len(industry_map))
+    # Merge P/E into prices
+    enriched = []
+    for p in all_prices:
+        code = p["symbol"].replace(".TW", "")
+        if code in pe_map:
+            p.update(pe_map[code])
+        p["date"] = target_date.isoformat()
+        enriched.append(p)
 
-        # Step 2: get daily prices (try today, fallback to recent trading days)
-        twse_stocks = _fetch_twse_daily()
-        tpex_stocks = _fetch_tpex_daily()
-
-        # Step 3: get P/E, yield, P/B
-        twse_pe = _fetch_twse_pe()
-        tpex_pe = _fetch_tpex_pe()
-
-        # Merge everything
-        pe_map = {**twse_pe, **tpex_pe}
-        all_stocks = twse_stocks + tpex_stocks
-
-        for s in all_stocks:
-            code = s["symbol"].replace(".TW", "")
-            if code in pe_map:
-                s.update(pe_map[code])
-            if code in industry_map:
-                s["industry"] = industry_map[code]
-
-        all_stocks = [s for s in all_stocks if s.get("close") and s.get("volume", 0) > 0]
-
-        snapshot = {
-            "date": date.today().isoformat(),
-            "updated_at": datetime.now().isoformat(),
-            "stocks": all_stocks,
-        }
-
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        SNAPSHOT_PATH.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        with _snapshot_lock:
-            _snapshot_cache = snapshot
-
-        logger.info("TW market snapshot saved: %d stocks", len(all_stocks))
-        return snapshot
-
-    except Exception as e:
-        logger.exception("Failed to fetch TW market data: %s", e)
-        return None
+    return {"date": target_date.isoformat(), "prices": enriched, "trading_day": True}
 
 
-def _is_stale(snapshot_date: str) -> bool:
-    if not snapshot_date:
-        return True
-    try:
-        snap_date = date.fromisoformat(snapshot_date)
-    except ValueError:
-        return True
-
-    today = date.today()
-    now = datetime.now()
-
-    if today.weekday() >= 5:
-        last_friday = today - timedelta(days=today.weekday() - 4)
-        return snap_date < last_friday
-
-    if now.hour < 14:
-        prev_day = today - timedelta(days=1)
-        while prev_day.weekday() >= 5:
-            prev_day -= timedelta(days=1)
-        return snap_date < prev_day
-
-    return snap_date < today
-
-
-# ── Industry mapping ──────────────────────────────────────────────────────────
-
-def _fetch_industry_mapping() -> dict[str, str]:
-    """Fetch company code → industry name mapping from TWSE open data."""
+def fetch_industry_mapping() -> dict[str, dict]:
+    """
+    Pull company code → {name, industry} from TWSE open data.
+    Returns dict keyed by 4-digit code.
+    """
     url = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=15)
         resp.encoding = "utf-8"
         data = resp.json()
 
-        result = {}
+        result: dict[str, dict] = {}
         for row in data:
             values = list(row.values())
             if len(values) < 6:
                 continue
-            code = str(values[1]).strip()       # index 1 = company code
-            industry_code = str(values[5]).strip()  # index 5 = industry code
+            code = str(values[1]).strip()
+            name = str(values[3]).strip()  # 公司簡稱
+            industry_code = str(values[5]).strip()
             industry_name = INDUSTRY_NAMES.get(industry_code, f"其他({industry_code})")
-            result[code] = industry_name
+            result[code] = {"name": name, "industry": industry_name}
 
+        logger.info("Industry mapping fetched: %d companies", len(result))
         return result
 
     except Exception as e:
@@ -226,19 +149,7 @@ def _fetch_industry_mapping() -> dict[str, str]:
         return {}
 
 
-# ── TWSE daily ────────────────────────────────────────────────────────────────
-
-def _fetch_twse_daily() -> list[dict]:
-    """Fetch TWSE daily closing data. Tries today first, falls back to recent trading days."""
-    for delta in range(0, 5):
-        d = date.today() - timedelta(days=delta)
-        if d.weekday() >= 5:
-            continue
-        stocks = _fetch_twse_daily_for_date(d)
-        if stocks:
-            return stocks
-    return []
-
+# ── TWSE daily fetcher ────────────────────────────────────────────────────────
 
 def _fetch_twse_daily_for_date(target_date: date) -> list[dict]:
     ds = target_date.strftime("%Y%m%d")
@@ -251,7 +162,7 @@ def _fetch_twse_daily_for_date(target_date: date) -> list[dict]:
         if data.get("stat") != "OK":
             return []
 
-        # Find the stock data table (largest table with 16 fields)
+        # New format: data inside tables[].data
         stock_rows = []
         for table in data.get("tables", []):
             rows = table.get("data", [])
@@ -261,133 +172,100 @@ def _fetch_twse_daily_for_date(target_date: date) -> list[dict]:
                 break
 
         if not stock_rows:
-            # Fallback: try old format
             stock_rows = data.get("data9", data.get("data8", []))
 
-        if not stock_rows:
-            return []
-
-        stocks = []
-        for row in stock_rows:
-            try:
-                code = row[0].strip()
-                name = row[1].strip()
-
-                if not code.isdigit() or len(code) != 4:
-                    continue
-
-                close = _parse_tw_number(row[8])
-                volume_shares = _parse_tw_number(row[2])
-                change_str = row[10].strip() if len(row) > 10 else "0"
-                change = _parse_tw_number(change_str)
-
-                # Direction from row[9]: contains color:green for negative, color:red for positive
-                direction = row[9] if len(row) > 9 else ""
-                if "green" in str(direction) and change and change > 0:
-                    change = -change
-
-                if close is None or close <= 0 or volume_shares is None:
-                    continue
-
-                volume = int(volume_shares / 1000)  # shares → 張
-                prev_close = close - (change or 0)
-                change_pct = round((change / prev_close) * 100, 2) if change and prev_close else 0
-
-                stocks.append({
-                    "symbol": f"{code}.TW",
-                    "name": name,
-                    "close": close,
-                    "change": change or 0,
-                    "change_pct": change_pct,
-                    "volume": volume,
-                    "market": "TWSE",
-                    "industry": "",
-                })
-            except (IndexError, ValueError, TypeError):
-                continue
-
-        logger.info("TWSE daily (%s): %d stocks", target_date, len(stocks))
-        return stocks
+        return [_parse_twse_row(row) for row in stock_rows if _parse_twse_row(row)]
 
     except Exception as e:
         logger.error("TWSE daily fetch failed for %s: %s", target_date, e)
         return []
 
 
-# ── TPEX daily ────────────────────────────────────────────────────────────────
+def _parse_twse_row(row: list) -> dict | None:
+    try:
+        code = row[0].strip()
+        name = row[1].strip()
 
-def _fetch_tpex_daily() -> list[dict]:
-    for delta in range(0, 5):
-        d = date.today() - timedelta(days=delta)
-        if d.weekday() >= 5:
-            continue
-        stocks = _fetch_tpex_daily_for_date(d)
-        if stocks:
-            return stocks
-    return []
+        if not code.isdigit() or len(code) != 4:
+            return None
 
+        close = _parse_tw_number(row[8])
+        volume_shares = _parse_tw_number(row[2])
+        change = _parse_tw_number(row[10]) if len(row) > 10 else None
+
+        direction = str(row[9]) if len(row) > 9 else ""
+        if "green" in direction and change and change > 0:
+            change = -change
+
+        if close is None or close <= 0 or volume_shares is None:
+            return None
+
+        volume = int(volume_shares / 1000)
+        prev_close = close - (change or 0)
+        change_pct = round((change / prev_close) * 100, 2) if change and prev_close else 0
+
+        return {
+            "symbol": f"{code}.TW",
+            "name": name,
+            "close": close,
+            "change_pct": change_pct,
+            "volume": volume,
+            "market": "TWSE",
+        }
+    except (IndexError, ValueError, TypeError):
+        return None
+
+
+# ── TPEX daily fetcher ────────────────────────────────────────────────────────
 
 def _fetch_tpex_daily_for_date(target_date: date) -> list[dict]:
     tw_date = f"{target_date.year - 1911}/{target_date.month:02d}/{target_date.day:02d}"
-    url = f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php?l=zh-tw&d={tw_date}&se=AL"
+    url = (
+        f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/"
+        f"stk_wn1430_result.php?l=zh-tw&d={tw_date}&se=AL"
+    )
 
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=30)
         data = resp.json()
-
-        stocks = []
-        for row in data.get("aaData", []):
-            try:
-                code = row[0].strip()
-                name = row[1].strip()
-
-                if not code.isdigit() or len(code) != 4:
-                    continue
-
-                close = _parse_tw_number(row[2])
-                change = _parse_tw_number(row[3])
-                volume_shares = _parse_tw_number(row[7])
-
-                if close is None or close <= 0 or volume_shares is None:
-                    continue
-
-                volume = int(volume_shares / 1000)
-                prev_close = close - (change or 0)
-                change_pct = round((change / prev_close) * 100, 2) if change and prev_close else 0
-
-                stocks.append({
-                    "symbol": f"{code}.TW",
-                    "name": name,
-                    "close": close,
-                    "change": change or 0,
-                    "change_pct": change_pct,
-                    "volume": volume,
-                    "market": "TPEX",
-                    "industry": "",
-                })
-            except (IndexError, ValueError, TypeError):
-                continue
-
-        logger.info("TPEX daily (%s): %d stocks", target_date, len(stocks))
-        return stocks
-
+        return [_parse_tpex_row(row) for row in data.get("aaData", []) if _parse_tpex_row(row)]
     except Exception as e:
         logger.error("TPEX daily fetch failed for %s: %s", target_date, e)
         return []
 
 
-# ── P/E, Yield, P/B ──────────────────────────────────────────────────────────
+def _parse_tpex_row(row: list) -> dict | None:
+    try:
+        code = row[0].strip()
+        name = row[1].strip()
 
-def _fetch_twse_pe() -> dict[str, dict]:
-    for delta in range(0, 5):
-        d = date.today() - timedelta(days=delta)
-        if d.weekday() >= 5:
-            continue
-        result = _fetch_twse_pe_for_date(d)
-        if result:
-            return result
-    return {}
+        if not code.isdigit() or len(code) != 4:
+            return None
 
+        close = _parse_tw_number(row[2])
+        change = _parse_tw_number(row[3])
+        volume_shares = _parse_tw_number(row[7])
+
+        if close is None or close <= 0 or volume_shares is None:
+            return None
+
+        volume = int(volume_shares / 1000)
+        prev_close = close - (change or 0)
+        change_pct = round((change / prev_close) * 100, 2) if change and prev_close else 0
+
+        return {
+            "symbol": f"{code}.TW",
+            "name": name,
+            "close": close,
+            "change_pct": change_pct,
+            "volume": volume,
+            "market": "TPEX",
+        }
+    except (IndexError, ValueError, TypeError):
+        return None
+
+
+# ── P/E fetchers ──────────────────────────────────────────────────────────────
 
 def _fetch_twse_pe_for_date(target_date: date) -> dict[str, dict]:
     ds = target_date.strftime("%Y%m%d")
@@ -396,7 +274,6 @@ def _fetch_twse_pe_for_date(target_date: date) -> dict[str, dict]:
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=30)
         data = resp.json()
-
         if data.get("stat") != "OK":
             return {}
 
@@ -411,8 +288,6 @@ def _fetch_twse_pe_for_date(target_date: date) -> dict[str, dict]:
                 }
             except (IndexError, ValueError):
                 continue
-
-        logger.info("TWSE PE (%s): %d entries", target_date, len(result))
         return result
 
     except Exception as e:
@@ -420,20 +295,12 @@ def _fetch_twse_pe_for_date(target_date: date) -> dict[str, dict]:
         return {}
 
 
-def _fetch_tpex_pe() -> dict[str, dict]:
-    for delta in range(0, 5):
-        d = date.today() - timedelta(days=delta)
-        if d.weekday() >= 5:
-            continue
-        result = _fetch_tpex_pe_for_date(d)
-        if result:
-            return result
-    return {}
-
-
 def _fetch_tpex_pe_for_date(target_date: date) -> dict[str, dict]:
     tw_date = f"{target_date.year - 1911}/{target_date.month:02d}/{target_date.day:02d}"
-    url = f"https://www.tpex.org.tw/web/stock/aftertrading/peratio_analysis/pera_result.php?l=zh-tw&d={tw_date}&type=ALL"
+    url = (
+        f"https://www.tpex.org.tw/web/stock/aftertrading/peratio_analysis/"
+        f"pera_result.php?l=zh-tw&d={tw_date}&type=ALL"
+    )
 
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=30)
@@ -450,8 +317,6 @@ def _fetch_tpex_pe_for_date(target_date: date) -> dict[str, dict]:
                 }
             except (IndexError, ValueError):
                 continue
-
-        logger.info("TPEX PE (%s): %d entries", target_date, len(result))
         return result
 
     except Exception as e:
@@ -459,42 +324,103 @@ def _fetch_tpex_pe_for_date(target_date: date) -> dict[str, dict]:
         return {}
 
 
+# ── Multi-day factor calculation ──────────────────────────────────────────────
+
+def _compute_multi_day_factors(symbol: str) -> dict:
+    """
+    Compute factors that require historical data:
+      - momentum_5d, momentum_20d
+      - ma5, ma20, ma_trend (price > MA5 > MA20)
+      - volume_ratio (today / 20d avg)
+      - volatility_20d (std of change_pct)
+    """
+    history = tw_db.get_history(symbol, days=25)  # need at least 20 days
+    if len(history) < 2:
+        return {}
+
+    # history is newest first; reverse for chronological
+    history = list(reversed(history))
+    closes = [h["close"] for h in history if h["close"] is not None]
+    volumes = [h["volume"] for h in history if h["volume"] is not None]
+    changes = [h["change_pct"] for h in history if h["change_pct"] is not None]
+
+    result = {}
+
+    # Momentum
+    if len(closes) >= 6:
+        result["momentum_5d"] = round((closes[-1] / closes[-6] - 1) * 100, 2)
+    if len(closes) >= 21:
+        result["momentum_20d"] = round((closes[-1] / closes[-21] - 1) * 100, 2)
+
+    # Moving averages
+    if len(closes) >= 5:
+        ma5 = sum(closes[-5:]) / 5
+        result["ma5"] = round(ma5, 2)
+    if len(closes) >= 20:
+        ma20 = sum(closes[-20:]) / 20
+        result["ma20"] = round(ma20, 2)
+
+    # MA trend score (0/50/100): price > MA5 > MA20 = bullish alignment
+    if "ma5" in result and "ma20" in result:
+        price = closes[-1]
+        if price > result["ma5"] > result["ma20"]:
+            result["ma_trend"] = 100
+        elif price < result["ma5"] < result["ma20"]:
+            result["ma_trend"] = 0
+        else:
+            result["ma_trend"] = 50
+
+    # Volume ratio (latest / 20d avg, excluding latest)
+    if len(volumes) >= 21:
+        avg_vol = sum(volumes[-21:-1]) / 20
+        if avg_vol > 0:
+            result["volume_ratio"] = round(volumes[-1] / avg_vol, 2)
+
+    # 20-day volatility (std dev of change_pct)
+    if len(changes) >= 20:
+        recent = changes[-20:]
+        mean = sum(recent) / len(recent)
+        variance = sum((x - mean) ** 2 for x in recent) / len(recent)
+        result["volatility_20d"] = round(variance ** 0.5, 2)
+
+    return result
+
+
 # ── Multi-factor ranking ──────────────────────────────────────────────────────
 
-def _rank_stocks(stocks: list[dict]) -> list[dict]:
+def _rank_stocks_with_history(snapshot: list[dict]) -> list[dict]:
     min_vol = SCREENER_CONFIG["min_volume"]
-    eligible = [s for s in stocks if s.get("volume", 0) >= min_vol]
-
+    eligible = [s for s in snapshot if s.get("volume", 0) >= min_vol]
     if not eligible:
         return []
 
+    # Enrich each stock with multi-day factors
+    for s in eligible:
+        s.update(_compute_multi_day_factors(s["symbol"]))
+
     w = SCREENER_CONFIG["weights"]
 
-    _assign_percentile(eligible, "change_pct", "momentum_rank", reverse=False)
-    _assign_percentile(eligible, "pe", "value_rank", reverse=True)
-    _assign_percentile(eligible, "pb", "pb_value_rank", reverse=True)
-    _assign_percentile(eligible, "yield_pct", "quality_rank", reverse=False)
-    _assign_percentile(eligible, "volume", "size_rank", reverse=False)
+    # Assign percentile ranks
+    _assign_percentile(eligible, "momentum_5d", "_rank_m5", reverse=False)
+    _assign_percentile(eligible, "momentum_20d", "_rank_m20", reverse=False)
+    _assign_percentile(eligible, "pe", "_rank_value", reverse=True)
+    _assign_percentile(eligible, "pb", "_rank_pb", reverse=True)
+    _assign_percentile(eligible, "yield_pct", "_rank_quality", reverse=False)
+    _assign_percentile(eligible, "volume_ratio", "_rank_volratio", reverse=False)
+    _assign_percentile(eligible, "ma_trend", "_rank_ma", reverse=False)
+    _assign_percentile(eligible, "volatility_20d", "_rank_lowvol", reverse=True)
 
-    for s in eligible:
-        s["_abs_change"] = abs(s.get("change_pct", 0))
-    _assign_percentile(eligible, "_abs_change", "low_vol_rank", reverse=True)
-
-    for s in eligible:
-        chg = s.get("change_pct", 0)
-        vol = s.get("volume", 0)
-        s["_vol_price"] = chg * (vol ** 0.5) if chg > 0 else chg * (vol ** 0.3)
-    _assign_percentile(eligible, "_vol_price", "vol_price_rank", reverse=False)
-
+    # Composite score
     for s in eligible:
         s["score"] = round(
-            s.get("momentum_rank", 50) * w["momentum"]
-            + s.get("value_rank", 50) * w["value"]
-            + s.get("pb_value_rank", 50) * w["pb_value"]
-            + s.get("quality_rank", 50) * w["quality"]
-            + s.get("size_rank", 50) * w["size"]
-            + s.get("low_vol_rank", 50) * w["low_vol"]
-            + s.get("vol_price_rank", 50) * w["vol_price"]
+            s.get("_rank_m5", 50)       * w["momentum_5d"]
+            + s.get("_rank_m20", 50)    * w["momentum_20d"]
+            + s.get("_rank_value", 50)  * w["value"]
+            + s.get("_rank_pb", 50)     * w["pb_value"]
+            + s.get("_rank_quality", 50)* w["quality"]
+            + s.get("_rank_volratio",50)* w["volume_ratio"]
+            + s.get("_rank_ma", 50)     * w["ma_trend"]
+            + s.get("_rank_lowvol", 50) * w["low_vol"]
         )
 
     eligible.sort(key=lambda s: s["score"], reverse=True)
@@ -512,16 +438,16 @@ def _rank_stocks(stocks: list[dict]) -> list[dict]:
             "yield_pct": s.get("yield_pct"),
             "volume": s.get("volume", 0),
             "factors": {
-                "momentum": s.get("momentum_rank", 0),
-                "value": s.get("value_rank", 0),
-                "pb_value": s.get("pb_value_rank", 0),
-                "quality": s.get("quality_rank", 0),
-                "size": s.get("size_rank", 0),
-                "low_vol": s.get("low_vol_rank", 0),
-                "vol_price": s.get("vol_price_rank", 0),
+                "momentum_5d":  s.get("_rank_m5", 0),
+                "momentum_20d": s.get("_rank_m20", 0),
+                "value":        s.get("_rank_value", 0),
+                "pb_value":     s.get("_rank_pb", 0),
+                "quality":      s.get("_rank_quality", 0),
+                "volume_ratio": s.get("_rank_volratio", 0),
+                "ma_trend":     s.get("_rank_ma", 0),
+                "low_vol":      s.get("_rank_lowvol", 0),
             },
         })
-
     return result
 
 
@@ -542,6 +468,8 @@ def _assign_percentile(stocks: list[dict], field: str, rank_field: str, reverse:
         if s["symbol"] not in valid_syms:
             s[rank_field] = 50
 
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _parse_tw_number(val) -> float | None:
     if val is None:

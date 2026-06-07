@@ -64,20 +64,15 @@ def get_peers(symbol: str) -> list[str]:
     if symbol in PEER_MAP:
         return PEER_MAP[symbol]
 
-    # Layer 2: TWSE industry classification (TW stocks only)
+    # Layer 2: TWSE industry classification (TW stocks only) via SQLite
     if ".TW" in symbol:
         try:
-            from .tw_market import find_industry_peers, _get_snapshot, _fetch_and_save_snapshot
-            # If snapshot doesn't exist yet, trigger a fetch
-            if _get_snapshot() is None:
-                logger.info("No TW market snapshot — triggering first fetch for peer lookup")
-                _fetch_and_save_snapshot()
+            from .tw_market import find_industry_peers
             industry_peers = find_industry_peers(symbol, top_n=3)
             if industry_peers:
                 return industry_peers
         except Exception as e:
             logger.warning("Industry peer lookup failed for %s: %s", symbol, e)
-            pass
 
     # Layer 3: no peers found
     return []
