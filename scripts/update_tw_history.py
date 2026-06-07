@@ -108,22 +108,25 @@ def _determine_dates(args) -> list[date]:
 
 
 def _refresh_companies():
-    """Pull industry mapping and upsert companies table."""
+    """Pull industry mapping (TWSE + TPEX) and upsert companies table."""
     mapping = fetch_industry_mapping()
     if not mapping:
         logger.warning("Industry mapping is empty — skipping companies refresh")
         return 0
 
-    companies = []
-    for code, info in mapping.items():
-        companies.append({
+    companies = [
+        {
             "symbol": f"{code}.TW",
             "name": info["name"],
             "industry": info["industry"],
-            "market": "TWSE",
-        })
+            "market": info.get("market", "TWSE"),
+        }
+        for code, info in mapping.items()
+    ]
     affected = tw_db.upsert_companies(companies)
-    logger.info("Companies upserted: %d", affected)
+    twse_n = sum(1 for c in companies if c["market"] == "TWSE")
+    tpex_n = sum(1 for c in companies if c["market"] == "TPEX")
+    logger.info("Companies upserted: %d (TWSE %d / TPEX %d)", affected, twse_n, tpex_n)
     return affected
 
 

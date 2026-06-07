@@ -43,7 +43,7 @@ SCREENER_CONFIG = {
     },
 }
 
-# TWSE industry code → name mapping
+# TWSE/TPEX industry code → name mapping (shared across both markets)
 INDUSTRY_NAMES = {
     "01": "水泥工業", "02": "食品工業", "03": "塑膠工業", "04": "紡織纖維",
     "05": "電機機械", "06": "電器電纜", "08": "玻璃陶瓷", "09": "造紙工業",
@@ -54,6 +54,8 @@ INDUSTRY_NAMES = {
     "26": "光電業", "27": "通信網路業", "28": "電子零組件業",
     "29": "電子通路業", "30": "其他電子業", "31": "綠能環保",
     "32": "數位雲端", "33": "運動休閒", "34": "居家生活",
+    "35": "其他電子業(35)", "36": "其他電子業(36)",
+    "37": "其他電子業(37)", "38": "其他電子業(38)",
 }
 
 
@@ -121,32 +123,51 @@ def fetch_for_date(target_date: date) -> dict:
 
 def fetch_industry_mapping() -> dict[str, dict]:
     """
-    Pull company code → {name, industry} from TWSE open data.
-    Returns dict keyed by 4-digit code.
+    Pull company code → {name, industry, market} from TWSE + TPEX open data.
+    Returns dict keyed by 4-digit code. Market is "TWSE" (上市) or "TPEX" (上櫃).
     """
-    url = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
-    try:
-        resp = requests.get(url, headers=_HEADERS, timeout=15)
-        resp.encoding = "utf-8"
-        data = resp.json()
+    result: dict[str, dict] = {}
 
-        result: dict[str, dict] = {}
-        for row in data:
+    # TWSE (上市)
+    try:
+        resp = requests.get(
+            "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+            headers=_HEADERS, timeout=15,
+        )
+        resp.encoding = "utf-8"
+        for row in resp.json():
             values = list(row.values())
             if len(values) < 6:
                 continue
             code = str(values[1]).strip()
-            name = str(values[3]).strip()  # 公司簡稱
+            name = str(values[3]).strip()
             industry_code = str(values[5]).strip()
             industry_name = INDUSTRY_NAMES.get(industry_code, f"其他({industry_code})")
-            result[code] = {"name": name, "industry": industry_name}
-
-        logger.info("Industry mapping fetched: %d companies", len(result))
-        return result
-
+            result[code] = {"name": name, "industry": industry_name, "market": "TWSE"}
+        logger.info("TWSE industry mapping: %d companies", sum(1 for v in result.values() if v["market"] == "TWSE"))
     except Exception as e:
-        logger.error("Industry mapping fetch failed: %s", e)
-        return {}
+        logger.error("TWSE industry mapping failed: %s", e)
+
+    # TPEX (上櫃)
+    try:
+        resp = requests.get(
+            "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
+            headers=_HEADERS, timeout=15,
+        )
+        resp.encoding = "utf-8"
+        for row in resp.json():
+            code = str(row.get("SecuritiesCompanyCode", "")).strip()
+            if not code or not code.isdigit() or len(code) != 4:
+                continue
+            name = str(row.get("CompanyAbbreviation", "")).strip()
+            industry_code = str(row.get("SecuritiesIndustryCode", "")).strip()
+            industry_name = INDUSTRY_NAMES.get(industry_code, f"其他({industry_code})")
+            result[code] = {"name": name, "industry": industry_name, "market": "TPEX"}
+        logger.info("TPEX industry mapping added (total: %d companies)", len(result))
+    except Exception as e:
+        logger.error("TPEX industry mapping failed: %s", e)
+
+    return result
 
 
 # ── TWSE daily fetcher ────────────────────────────────────────────────────────
@@ -228,7 +249,19 @@ def _fetch_tpex_daily_for_date(target_date: date) -> list[dict]:
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=30)
         data = resp.json()
-        return [_parse_tpex_row(row) for row in data.get("aaData", []) if _parse_tpex_row(row)]
+
+        # New format: tables[0].data
+        rows = []
+        for table in data.get("tables", []):
+            if len(table.get("fields", [])) >= 16 and len(table.get("data", [])) > 100:
+                rows = table["data"]
+                break
+
+        # Fallback to legacy aaData if present
+        if not rows:
+            rows = data.get("aaData", [])
+
+        return [_parse_tpex_row(row) for row in rows if _parse_tpex_row(row)]
     except Exception as e:
         logger.error("TPEX daily fetch failed for %s: %s", target_date, e)
         return []
@@ -306,13 +339,24 @@ def _fetch_tpex_pe_for_date(target_date: date) -> dict[str, dict]:
         resp = requests.get(url, headers=_HEADERS, timeout=30)
         data = resp.json()
 
+        # New format: tables[0].data with 8 fields
+        # [0]code [1]name [2]pe [3]yield [4]year [5]dividend [6]pb [7]quarter
+        rows = []
+        for table in data.get("tables", []):
+            if len(table.get("data", [])) > 100:
+                rows = table["data"]
+                break
+
+        if not rows:
+            rows = data.get("aaData", [])
+
         result = {}
-        for row in data.get("aaData", []):
+        for row in rows:
             try:
                 code = row[0].strip()
                 result[code] = {
                     "pe": _parse_tw_number(row[2]),
-                    "yield_pct": _parse_tw_number(row[5]),
+                    "yield_pct": _parse_tw_number(row[3]),
                     "pb": _parse_tw_number(row[6]) if len(row) > 6 else None,
                 }
             except (IndexError, ValueError):
