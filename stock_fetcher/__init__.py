@@ -5,3 +5,4 @@ from .fundamentals import fetch_fundamentals
 from .indicators import compute_all
 from .scoring import compute_composite_score
 from .peers import build_peer_comparison, build_watchlist_comparison
+from .risk import compute_risk_metrics
