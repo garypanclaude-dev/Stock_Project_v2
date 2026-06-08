@@ -15,7 +15,9 @@ from .utils import retry
 logger = logging.getLogger(__name__)
 
 # ── Peer mapping ──────────────────────────────────────────────────────────────
-# Manually curated for major stocks; fallback uses yfinance sector lookup.
+# Manually curated for US stocks (no industry classification available).
+# TW stocks are handled by tw_market.find_industry_peers() via TWSE/TPEX
+# industry codes — no hardcoded entries needed here.
 
 PEER_MAP: dict[str, list[str]] = {
     # US Tech
@@ -33,16 +35,6 @@ PEER_MAP: dict[str, list[str]] = {
     "TSLA":  ["F", "GM", "RIVN"],
     "F":     ["GM", "TSLA", "TM"],
     "GM":    ["F", "TSLA", "TM"],
-    # TW Semis
-    "2330.TW": ["2454.TW", "3711.TW", "2303.TW"],
-    "2454.TW": ["2330.TW", "3711.TW", "2379.TW"],
-    "3711.TW": ["2330.TW", "2454.TW", "2303.TW"],
-    # TW Finance
-    "2881.TW": ["2882.TW", "2884.TW", "2886.TW"],
-    "2882.TW": ["2881.TW", "2884.TW", "2886.TW"],
-    # TW Electronics
-    "2317.TW": ["2382.TW", "3231.TW", "2354.TW"],
-    "2308.TW": ["2301.TW", "2357.TW", "2395.TW"],
 }
 
 # Market index per region
