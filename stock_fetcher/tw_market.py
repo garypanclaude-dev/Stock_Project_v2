@@ -434,6 +434,12 @@ def _parse_tpex_row(row: list) -> dict | None:
 # ── P/E fetchers ──────────────────────────────────────────────────────────────
 
 def _fetch_twse_pe_for_date(target_date: date) -> dict[str, dict]:
+    """Fetch TWSE BWIBBU_d (yield / PE / PB) for a date.
+
+    Standard 8-field response format:
+      [0] code, [1] name, [2] close, [3] yield_pct, [4] dividend_year(民國),
+      [5] pe, [6] pb, [7] report_period
+    """
     ds = target_date.strftime("%Y%m%d")
     url = f"https://www.twse.com.tw/exchangeReport/BWIBBU_d?response=json&date={ds}&selectType=ALL"
 
@@ -443,14 +449,23 @@ def _fetch_twse_pe_for_date(target_date: date) -> dict[str, dict]:
         if data.get("stat") != "OK":
             return {}
 
+        # Newer format may put rows under tables[*]; fall back to legacy "data"
+        rows: list = []
+        for table in data.get("tables", []):
+            if len(table.get("data", [])) > 100:
+                rows = table["data"]
+                break
+        if not rows:
+            rows = data.get("data", [])
+
         result = {}
-        for row in data.get("data", []):
+        for row in rows:
             try:
                 code = row[0].strip()
                 result[code] = {
-                    "pe": _parse_tw_number(row[4]),
-                    "yield_pct": _parse_tw_number(row[2]),
-                    "pb": _parse_tw_number(row[5]) if len(row) > 5 else None,
+                    "pe":        _parse_tw_number(row[5]) if len(row) > 5 else None,
+                    "yield_pct": _parse_tw_number(row[3]) if len(row) > 3 else None,
+                    "pb":        _parse_tw_number(row[6]) if len(row) > 6 else None,
                 }
             except (IndexError, ValueError):
                 continue
@@ -462,6 +477,12 @@ def _fetch_twse_pe_for_date(target_date: date) -> dict[str, dict]:
 
 
 def _fetch_tpex_pe_for_date(target_date: date) -> dict[str, dict]:
+    """Fetch TPEX peratio (PE / dividend / yield / PB) for a date.
+
+    Standard 8-field response format:
+      [0] code, [1] name, [2] pe, [3] dividend_per_share, [4] dividend_year(民國),
+      [5] yield_pct, [6] pb, [7] report_period
+    """
     tw_date = f"{target_date.year - 1911}/{target_date.month:02d}/{target_date.day:02d}"
     url = (
         f"https://www.tpex.org.tw/web/stock/aftertrading/peratio_analysis/"
@@ -472,8 +493,6 @@ def _fetch_tpex_pe_for_date(target_date: date) -> dict[str, dict]:
         resp = requests.get(url, headers=_HEADERS, timeout=30)
         data = resp.json()
 
-        # New format: tables[0].data with 8 fields
-        # [0]code [1]name [2]pe [3]yield [4]year [5]dividend [6]pb [7]quarter
         rows = []
         for table in data.get("tables", []):
             if len(table.get("data", [])) > 100:
@@ -486,11 +505,11 @@ def _fetch_tpex_pe_for_date(target_date: date) -> dict[str, dict]:
         result = {}
         for row in rows:
             try:
-                code = row[0].strip()
+                code = str(row[0]).strip()
                 result[code] = {
-                    "pe": _parse_tw_number(row[2]),
-                    "yield_pct": _parse_tw_number(row[3]),
-                    "pb": _parse_tw_number(row[6]) if len(row) > 6 else None,
+                    "pe":        _parse_tw_number(row[2]) if len(row) > 2 else None,
+                    "yield_pct": _parse_tw_number(row[5]) if len(row) > 5 else None,
+                    "pb":        _parse_tw_number(row[6]) if len(row) > 6 else None,
                 }
             except (IndexError, ValueError):
                 continue
