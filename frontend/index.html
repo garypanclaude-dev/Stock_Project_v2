@@ -276,6 +276,7 @@
                   <span class="indicator-chip text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400 active" data-key="ma20">MA20</span>
                   <span class="indicator-chip text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400" data-key="ma60">MA60</span>
                   <span class="indicator-chip text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400" data-key="bb">BB</span>
+                  <span class="indicator-chip text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400 active" data-key="patterns">型態</span>
                 </div>
               </div>
             </div>
@@ -327,6 +328,10 @@
             <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
               <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">季度營收趨勢</h2>
               <div id="quarterly-bars" class="space-y-2.5"></div>
+            </div>
+            <div id="patterns-card" class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in hidden">
+              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">近期 K 線型態</h2>
+              <div id="patterns-list" class="space-y-2"></div>
             </div>
             <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
               <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-4">市場情緒</h2>
@@ -394,7 +399,7 @@ let currentTicker = 'AAPL';
 let currentData = null;          // full API response (cached)
 let priceChart = null, volumeChart = null, rsiChart = null, macdChart = null;
 let kdChart = null, obvChart = null;
-let activeOverlays = new Set(['ma5','ma10','ma20']);
+let activeOverlays = new Set(['ma5','ma10','ma20','patterns']);
 let sidebarOpen = true;
 
 // ── Watchlist state ──────────────────────────────────────────────────────────
@@ -530,8 +535,8 @@ document.getElementById('period-btns').addEventListener('click', async (e) => {
     currentData.indicators = data.indicators;
     currentData.period = data.period;
 
-    // Only re-render charts
-    renderCandlestick(currentData.kline, currentData.indicators);
+    // Only re-render charts (patterns are kept from initial full load)
+    renderCandlestick(currentData.kline, currentData.indicators, currentData.patterns);
     renderVolume(currentData.kline);
     renderRSI(currentData.kline, currentData.indicators);
     renderMACD(currentData.kline, currentData.indicators);
@@ -552,7 +557,7 @@ document.getElementById('overlay-chips').addEventListener('click', e => {
   const key = chip.dataset.key;
   chip.classList.toggle('active');
   if (activeOverlays.has(key)) activeOverlays.delete(key); else activeOverlays.add(key);
-  if (currentData) { renderCandlestick(currentData.kline, currentData.indicators); renderVolume(currentData.kline); }
+  if (currentData) { renderCandlestick(currentData.kline, currentData.indicators, currentData.patterns); renderVolume(currentData.kline); }
 });
 
 // ── Mock toggle ──────────────────────────────────────────────────────────────
@@ -630,13 +635,14 @@ function renderDashboard(d) {
   renderScore(d.score, d.commentary);
   renderRisk(d.risk);
   renderPriceHeader(d.latest_quote, d.is_mock, d.fundamentals);
-  renderCandlestick(d.kline, d.indicators);
+  renderCandlestick(d.kline, d.indicators, d.patterns);
   renderVolume(d.kline);
   renderRSI(d.kline, d.indicators);
   renderMACD(d.kline, d.indicators);
   renderKD(d.kline, d.indicators);
   renderOBV(d.kline, d.indicators);
   renderMAAlignment(d.indicators);
+  renderPatterns(d.patterns);
   renderValuation(d.fundamentals);
   renderProfitability(d.fundamentals);
   renderDividend(d.fundamentals);
@@ -874,6 +880,71 @@ const CandlestickPlugin = {
   }
 };
 
+// Pattern markers: triangles below bullish patterns, above bearish, dot for neutral
+const PatternMarkerPlugin = {
+  id: 'pattern-markers',
+  afterDatasetsDraw(chart) {
+    const patterns = chart._patterns;
+    const klines = chart._klines;
+    if (!patterns || !patterns.length || !klines) return;
+    if (!activeOverlays.has('patterns')) return;
+    const { ctx, scales: { y } } = chart;
+    const meta = chart.getDatasetMeta(0);
+
+    // Group by date to stack multiple patterns per bar
+    const byDate = {};
+    patterns.forEach(p => {
+      const idx = klines.findIndex(k => k.date === p.date);
+      if (idx < 0) return;
+      if (!byDate[idx]) byDate[idx] = [];
+      byDate[idx].push(p);
+    });
+
+    Object.entries(byDate).forEach(([idxStr, pats]) => {
+      const idx = +idxStr;
+      const bar = meta.data[idx];
+      if (!bar) return;
+      const xc = bar.x;
+      const k = klines[idx];
+
+      pats.forEach((p, stackI) => {
+        const size = 6;
+        const offset = 10 + stackI * (size * 2 + 2);
+        ctx.save();
+        ctx.fillStyle = p.color;
+        if (p.direction === 'bullish') {
+          const yPos = y.getPixelForValue(k.low) + offset;
+          ctx.beginPath();
+          ctx.moveTo(xc, yPos);
+          ctx.lineTo(xc - size, yPos + size);
+          ctx.lineTo(xc + size, yPos + size);
+          ctx.closePath();
+          ctx.fill();
+        } else if (p.direction === 'bearish') {
+          const yPos = y.getPixelForValue(k.high) - offset;
+          ctx.beginPath();
+          ctx.moveTo(xc, yPos);
+          ctx.lineTo(xc - size, yPos - size);
+          ctx.lineTo(xc + size, yPos - size);
+          ctx.closePath();
+          ctx.fill();
+        } else {
+          // neutral — small diamond above
+          const yPos = y.getPixelForValue(k.high) - offset;
+          ctx.beginPath();
+          ctx.moveTo(xc, yPos - size/2);
+          ctx.lineTo(xc + size/2, yPos);
+          ctx.lineTo(xc, yPos + size/2);
+          ctx.lineTo(xc - size/2, yPos);
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.restore();
+      });
+    });
+  }
+};
+
 function thinLabels(klines) {
   return klines.map((k, i) => {
     if (klines.length > 120) return i % 20 === 0 ? k.date.slice(5) : '';
@@ -883,7 +954,7 @@ function thinLabels(klines) {
   });
 }
 
-function renderCandlestick(klines, indicators) {
+function renderCandlestick(klines, indicators, patterns) {
   if (priceChart) priceChart.destroy();
   const ctx = document.getElementById('price-chart').getContext('2d');
   const lo = Math.min(...klines.map(k => k.low)), hi = Math.max(...klines.map(k => k.high));
@@ -909,9 +980,10 @@ function renderCandlestick(klines, indicators) {
       },
       plugins:{legend:{display:false},tooltip:{callbacks:{title:items=>klines[items[0].dataIndex]?.date||'',label:item=>{if(item.datasetIndex===0){const k=klines[item.dataIndex];return[`  Open  $${k.open.toFixed(2)}`,`  High  $${k.high.toFixed(2)}`,`  Low   $${k.low.toFixed(2)}`,`  Close $${k.close.toFixed(2)}`]}return`  ${item.dataset.label}: $${item.raw?.toFixed(2)??'–'}`}},backgroundColor:'#0f172a',borderColor:'#334155',borderWidth:1,titleColor:'#f1f5f9',bodyColor:'#94a3b8',padding:10}},
     },
-    plugins:[CandlestickPlugin],
+    plugins:[CandlestickPlugin, PatternMarkerPlugin],
   });
   priceChart._klines = klines;
+  priceChart._patterns = patterns || [];
 }
 
 function renderVolume(klines) {
@@ -988,6 +1060,32 @@ function renderMAAlignment(indicators) {
   el.style.borderColor = a.color;
   el.style.backgroundColor = (a.color || '#94a3b8') + '15';
   el.classList.remove('hidden');
+}
+
+function renderPatterns(patterns) {
+  const card = document.getElementById('patterns-card');
+  const list = document.getElementById('patterns-list');
+  if (!patterns || patterns.length === 0) {
+    card.classList.add('hidden');
+    list.innerHTML = '';
+    return;
+  }
+  card.classList.remove('hidden');
+  // Show newest first
+  const sorted = [...patterns].sort((a, b) => b.date.localeCompare(a.date));
+  list.innerHTML = sorted.slice(0, 8).map(p => {
+    const icon = p.direction === 'bullish' ? '▲' : p.direction === 'bearish' ? '▼' : '◆';
+    return `<div class="flex items-start gap-2 px-2.5 py-1.5 rounded-lg border" style="border-color:${p.color}40;background:${p.color}10">
+      <span class="text-sm leading-none mt-0.5" style="color:${p.color}">${icon}</span>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-xs font-bold" style="color:${p.color}">${p.label}</span>
+          <span class="text-[10px] text-slate-500 tabular-nums">${p.date}</span>
+        </div>
+        <div class="text-[11px] text-slate-400 leading-snug mt-0.5">${p.description}</div>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 // ── Render: fundamentals ─────────────────────────────────────────────────────

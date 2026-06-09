@@ -1,8 +1,9 @@
 # 風險指標系統 (Risk Metrics)
 
-> 版本：1.1
+> 版本：1.2
 > 最後更新：2026-06-10
 > v1.1：新增「警示燈號」(B7 整合) — KD 高檔死叉 / OBV 看空背離 / 均線空頭排列
+> v1.2：警示燈號加第 4 類「近期看空反轉型態」(B8 整合)
 
 ## 概述
 
@@ -187,19 +188,21 @@ True Range = max(high - low, |high - prev_close|, |low - prev_close|)
 
 **為什麼分開？** 風險指標的核心數字（HV、MDD）反映「歷史已發生的事實」，警示則是「當前需要注意的潛在訊號」。性質不同，分開呈現避免使用者把警示當作數字判讀。
 
-### 三類警示
+### 四類警示
 
 | 警示 type | 觸發條件 | 嚴重度 | 顏色 |
 |---------|---------|-------|------|
 | `kd_death_cross` | K 線在 **K > 70** 的高檔由上向下穿越 D 線 | warn | 🟠 橘 |
 | `obv_bearish_divergence` | 近 10 日股價上漲但 OBV 下跌（量價背離） | warn | 🟠 橘 |
 | `ma_bearish_alignment` | MA5 < MA10 < MA20 < MA60 且 收盤 < MA5 | danger | 🔴 紅 |
+| `bearish_pattern` (v1.2) | 近 5 日 K 線出現流星 / 夜星 / 看空吞噬 | warn | 🟠 橘 |
 
 ### 設定（`risk_config.py`）
 
 ```python
 WARN_KD_DEATH_CROSS_THRESHOLD = 70    # K 在 >70 才視為「高檔」死叉
 WARN_OBV_DIVERGENCE_LOOKBACK = 10     # 比對 10 日斜率
+WARN_BEARISH_PATTERN_LOOKBACK = 5     # 近 5 日看空型態觸發警示 (v1.2)
 ```
 
 ### 警示模板（API 回傳格式）

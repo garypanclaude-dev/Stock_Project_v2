@@ -74,4 +74,14 @@ WARNING_TEMPLATES = {
         "description": "MA5 < MA10 < MA20 < MA60 且股價跌破 MA5，趨勢已轉空。",
         "color": "#ef4444",
     },
+    "bearish_pattern": {
+        "type": "bearish_pattern",
+        "severity": "warn",
+        "label": "近期看空反轉型態",
+        "description": "近 5 日 K 線出現看空反轉型態（流星 / 夜星 / 看空吞噬），需留意回檔風險。",
+        "color": "#f97316",
+    },
 }
+
+# Bearish pattern detection window for risk warning
+WARN_BEARISH_PATTERN_LOOKBACK = 5

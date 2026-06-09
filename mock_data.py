@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from stock_fetcher.indicators import compute_all
 from stock_fetcher.scoring import compute_composite_score
 from stock_fetcher.risk import compute_risk_metrics
+from stock_fetcher.patterns import detect_patterns
 
 
 # ── Helper: generate extended kline for a period ─────────────────────────────
@@ -201,15 +202,18 @@ def _build_stock(
         "query_time": "2026-05-21T10:00:00",
     }
 
+    patterns = detect_patterns(klines)
+
     score = compute_composite_score(
         indicators=indicators,
         fundamentals=fundamentals,
         sentiment_summary=sentiment,
         catalysts=catalysts,
         kline=klines,
+        patterns=patterns,
     )
 
-    risk = compute_risk_metrics(klines, indicators)
+    risk = compute_risk_metrics(klines, indicators, patterns)
 
     # Mock commentary based on grade
     grade_label = score["grade"]["label"]
@@ -234,6 +238,7 @@ def _build_stock(
         "sentiment_summary": sentiment,
         "score": score,
         "risk": risk,
+        "patterns": patterns,
         "commentary": commentary_map.get(grade_label, ""),
     }
 
@@ -303,12 +308,15 @@ def _build_generic(ticker: str, period: str) -> dict:
     }
     sent = {"bullish": 0, "bearish": 0, "neutral": 0, "total": 0}
 
+    patterns = detect_patterns(klines)
+
     score = compute_composite_score(
         indicators=indicators, fundamentals=fund,
         sentiment_summary=None, catalysts=None, kline=klines,
+        patterns=patterns,
     )
 
-    risk = compute_risk_metrics(klines, indicators)
+    risk = compute_risk_metrics(klines, indicators, patterns)
 
     return {
         "symbol": ticker,
@@ -327,6 +335,7 @@ def _build_generic(ticker: str, period: str) -> dict:
         "sentiment_summary": sent,
         "score": score,
         "risk": risk,
+        "patterns": patterns,
         "commentary": "技術面與基本面訊號交織，無催化劑新聞。短期策略建議：觀望為主。",
     }
 

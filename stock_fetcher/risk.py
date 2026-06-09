@@ -18,6 +18,7 @@ from .risk_config import (
     HV_WINDOWS,
     SWING_LOOKBACK,
     TRADING_DAYS_PER_YEAR,
+    WARN_BEARISH_PATTERN_LOOKBACK,
     WARN_KD_DEATH_CROSS_THRESHOLD,
     WARN_OBV_DIVERGENCE_LOOKBACK,
     WARNING_TEMPLATES,
@@ -241,8 +242,12 @@ def _latest_non_null(seq) -> float | None:
 
 # ── Warning signals (technical risk alerts) ───────────────────────────────────
 
-def compute_risk_warnings(kline: list[dict], indicators: dict | None) -> list[dict]:
-    """Detect technical risk warnings from B7 indicators.
+def compute_risk_warnings(
+    kline: list[dict],
+    indicators: dict | None,
+    patterns: list[dict] | None = None,
+) -> list[dict]:
+    """Detect technical risk warnings from B7 / B8 signals.
 
     Returns a list of warning dicts, each with keys:
       type, severity, label, description, color
@@ -250,8 +255,11 @@ def compute_risk_warnings(kline: list[dict], indicators: dict | None) -> list[di
     Empty list = no warnings detected. These do not affect numeric risk metrics.
     """
     warnings: list[dict] = []
-    if not kline or not indicators:
+    if not kline:
         return warnings
+    if not indicators and not patterns:
+        return warnings
+    indicators = indicators or {}
 
     # 1. KD high-zone death cross
     kd = indicators.get("kd")
@@ -281,12 +289,31 @@ def compute_risk_warnings(kline: list[dict], indicators: dict | None) -> list[di
     if isinstance(ma_align, dict) and ma_align.get("status") == "bearish_alignment":
         warnings.append(dict(WARNING_TEMPLATES["ma_bearish_alignment"]))
 
+    # 4. Bearish candlestick pattern in recent N bars (B8)
+    if patterns:
+        n = len(kline)
+        cutoff_index = n - WARN_BEARISH_PATTERN_LOOKBACK
+        bearish_recent = [
+            p for p in patterns
+            if p.get("direction") == "bearish" and p.get("index", -1) >= cutoff_index
+        ]
+        if bearish_recent:
+            tmpl = dict(WARNING_TEMPLATES["bearish_pattern"])
+            # Enrich with the actual pattern labels for context
+            labels = ", ".join(sorted({p["label"] for p in bearish_recent}))
+            tmpl["description"] = f"近 {WARN_BEARISH_PATTERN_LOOKBACK} 日出現{labels}，需留意回檔風險。"
+            warnings.append(tmpl)
+
     return warnings
 
 
 # ── Main entry ────────────────────────────────────────────────────────────────
 
-def compute_risk_metrics(kline: list[dict], indicators: dict | None = None) -> dict:
+def compute_risk_metrics(
+    kline: list[dict],
+    indicators: dict | None = None,
+    patterns: list[dict] | None = None,
+) -> dict:
     """Compute the full risk-metrics payload for the given kline.
 
     Parameters
@@ -339,7 +366,7 @@ def compute_risk_metrics(kline: list[dict], indicators: dict | None = None) -> d
             "atr_14": atr,
             "methods": methods,
         },
-        "warnings": compute_risk_warnings(kline, indicators),
+        "warnings": compute_risk_warnings(kline, indicators, patterns),
     }
 
 

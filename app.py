@@ -114,7 +114,8 @@ async def get_stock_insights(
     # ── Step 1: fetch price, news, fundamentals in parallel ─────────────
     from stock_fetcher import (
         analyze_news, fetch_stock_news, fetch_stock_price, fetch_fundamentals,
-        compute_composite_score, compute_risk_metrics, generate_commentary,
+        compute_composite_score, compute_risk_metrics, detect_patterns,
+        generate_commentary,
     )
 
     try:
@@ -148,17 +149,21 @@ async def get_stock_insights(
 
     sentiment_summary = {"bullish": bullish, "bearish": bearish, "neutral": neutral, "total": len(catalysts)}
 
-    # ── Step 3: compute composite score (pure calculation, no I/O) ────
+    # ── Step 3: detect candlestick patterns (pure calculation) ───────
+    patterns = detect_patterns(price_data["kline"])
+
+    # ── Step 3a: compute composite score (pure calculation, no I/O) ──
     score = compute_composite_score(
         indicators=price_data["indicators"],
         fundamentals=fundamentals,
         sentiment_summary=sentiment_summary if not ai_error else None,
         catalysts=catalysts if not ai_error else None,
         kline=price_data["kline"],
+        patterns=patterns,
     )
 
     # ── Step 3b: compute risk metrics (HV, MDD, ATR, stop-loss) ──────
-    risk = compute_risk_metrics(price_data["kline"], price_data["indicators"])
+    risk = compute_risk_metrics(price_data["kline"], price_data["indicators"], patterns)
 
     # ── Step 4: AI commentary — graceful degradation ─────────────────
     commentary = None
@@ -182,6 +187,7 @@ async def get_stock_insights(
         "sentiment_summary": sentiment_summary,
         "score": score,
         "risk": risk,
+        "patterns": patterns,
         "commentary": commentary,
     }
 

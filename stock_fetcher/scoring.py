@@ -16,6 +16,7 @@ def compute_composite_score(
     sentiment_summary: dict | None,
     catalysts: list[dict] | None,
     kline: list[dict] | None,
+    patterns: list[dict] | None = None,
 ) -> dict:
     """
     Compute the composite investment score (0-100).
@@ -28,7 +29,7 @@ def compute_composite_score(
       - sentiment: { score, details, available }
       - weights_used: which weight set was applied
     """
-    tech = _score_technical(indicators, kline)
+    tech = _score_technical(indicators, kline, patterns)
     fund = _score_fundamental(fundamentals)
     sent = _score_sentiment(sentiment_summary, catalysts)
 
@@ -65,7 +66,11 @@ def compute_composite_score(
 
 # ── Technical Score ───────────────────────────────────────────────────────────
 
-def _score_technical(indicators: dict | None, kline: list[dict] | None) -> dict:
+def _score_technical(
+    indicators: dict | None,
+    kline: list[dict] | None,
+    patterns: list[dict] | None = None,
+) -> dict:
     rsi_score  = _score_rsi(indicators)
     macd_score = _score_macd(indicators)
     ma_score   = _score_ma_alignment(indicators, kline)
@@ -73,7 +78,7 @@ def _score_technical(indicators: dict | None, kline: list[dict] | None) -> dict:
     kd_score   = _score_kd(indicators)
     obv_score  = _score_obv(indicators, kline)
 
-    total = (
+    base = (
         rsi_score  * cfg.TECH_WEIGHTS["rsi"]
         + macd_score * cfg.TECH_WEIGHTS["macd"]
         + ma_score   * cfg.TECH_WEIGHTS["ma_alignment"]
@@ -82,8 +87,10 @@ def _score_technical(indicators: dict | None, kline: list[dict] | None) -> dict:
         + obv_score  * cfg.TECH_WEIGHTS["obv"]
     )
 
+    adjustment = _compute_pattern_adjustment(patterns, kline)
+
     return {
-        "score": _clamp(round(total)),
+        "score": _clamp(round(base + adjustment)),
         "details": {
             "rsi": rsi_score,
             "macd": macd_score,
@@ -91,8 +98,38 @@ def _score_technical(indicators: dict | None, kline: list[dict] | None) -> dict:
             "bollinger": bb_score,
             "kd": kd_score,
             "obv": obv_score,
+            "pattern_adjustment": adjustment,
         },
     }
+
+
+def _compute_pattern_adjustment(
+    patterns: list[dict] | None,
+    kline: list[dict] | None,
+) -> int:
+    """Map recent candlestick patterns to a small additive technical adjustment.
+
+    Bullish patterns add +PER_SIGNAL each, bearish subtract. Capped at ±CAP.
+    Doji (neutral direction) contributes nothing. Only patterns within the
+    last PATTERN_ADJUSTMENT_LOOKBACK kline bars are counted.
+    """
+    if not patterns or not kline:
+        return 0
+
+    n = len(kline)
+    cutoff_index = n - cfg.PATTERN_ADJUSTMENT_LOOKBACK
+    adjustment = 0
+    for p in patterns:
+        if p.get("index", -1) < cutoff_index:
+            continue
+        direction = p.get("direction")
+        if direction == "bullish":
+            adjustment += cfg.PATTERN_ADJUSTMENT_PER_SIGNAL
+        elif direction == "bearish":
+            adjustment -= cfg.PATTERN_ADJUSTMENT_PER_SIGNAL
+
+    cap = cfg.PATTERN_ADJUSTMENT_CAP
+    return max(-cap, min(cap, adjustment))
 
 
 def _score_rsi(indicators: dict | None) -> int:

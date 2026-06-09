@@ -92,22 +92,34 @@ API_DELAY_SECONDS = 0.5
 # ── Screener config ───────────────────────────────────────────────────────────
 # v3.1 (B7 integration): 8 → 10 factors, added KD + OBV; ma_trend upgraded to
 # 4-state classification (bullish / bearish / tangled / neutral).
+# v3.2 (B8 integration): 10 → 11 factors, added candlestick pattern factor.
 SCREENER_CONFIG = {
     "min_volume": 500,
     "top_n": 20,
     "weights": {
-        "momentum_5d":  0.12,
-        "momentum_20d": 0.12,
-        "value":        0.13,
+        "momentum_5d":  0.11,
+        "momentum_20d": 0.11,
+        "value":        0.12,
         "pb_value":     0.08,
-        "quality":      0.13,
+        "quality":      0.12,
         "volume_ratio": 0.08,
         "ma_trend":     0.08,
         "low_vol":      0.08,
-        "kd":           0.10,
+        "kd":           0.09,
         "obv":          0.08,
+        "pattern":      0.05,
     },
 }
+
+# Pattern factor scoring (within screener)
+PATTERN_FACTOR_LOOKBACK = 10        # scan last 10 bars
+PATTERN_FACTOR_BEARISH_OVERRIDE = 30  # any bearish in window → score
+PATTERN_FACTOR_BULLISH_SCORES = {
+    0: 50,    # no bullish patterns → neutral
+    1: 70,
+    2: 85,
+}
+PATTERN_FACTOR_BULLISH_DEFAULT = 95  # 3 or more
 
 # KD raw → absolute factor score (used before percentile ranking)
 KD_FACTOR_SCORES = [
@@ -581,6 +593,20 @@ def _compute_multi_day_factors(symbol: str) -> dict:
             result["kd_value"] = k_vals[-1]
             result["kd"] = _lookup_factor_score(k_vals[-1], KD_FACTOR_SCORES, KD_FACTOR_DEFAULT)
 
+    # Candlestick pattern (B8) — bullish signals add, bearish overrides down
+    if len(full_rows) >= 3:
+        from .patterns import detect_patterns
+        patterns = detect_patterns(full_rows, lookback=PATTERN_FACTOR_LOOKBACK)
+        bullish_count = sum(1 for p in patterns if p["direction"] == "bullish")
+        bearish_count = sum(1 for p in patterns if p["direction"] == "bearish")
+        if bearish_count > 0:
+            result["pattern"] = PATTERN_FACTOR_BEARISH_OVERRIDE
+        else:
+            result["pattern"] = PATTERN_FACTOR_BULLISH_SCORES.get(
+                bullish_count, PATTERN_FACTOR_BULLISH_DEFAULT
+            )
+        result["pattern_count"] = {"bullish": bullish_count, "bearish": bearish_count}
+
     # OBV trend — compare 5-day OBV slope vs price slope
     if len(full_rows) >= OBV_FACTOR_LOOKBACK + 1:
         from .indicators import obv as compute_obv
@@ -641,6 +667,7 @@ def _rank_stocks_with_history(snapshot: list[dict]) -> list[dict]:
     _assign_percentile(eligible, "volatility_20d", "_rank_lowvol", reverse=True)
     _assign_percentile(eligible, "kd", "_rank_kd", reverse=False)
     _assign_percentile(eligible, "obv", "_rank_obv", reverse=False)
+    _assign_percentile(eligible, "pattern", "_rank_pattern", reverse=False)
 
     # Composite score
     for s in eligible:
@@ -655,6 +682,7 @@ def _rank_stocks_with_history(snapshot: list[dict]) -> list[dict]:
             + s.get("_rank_lowvol", 50) * w["low_vol"]
             + s.get("_rank_kd", 50)     * w["kd"]
             + s.get("_rank_obv", 50)    * w["obv"]
+            + s.get("_rank_pattern", 50)* w["pattern"]
         )
 
     eligible.sort(key=lambda s: s["score"], reverse=True)
@@ -682,6 +710,7 @@ def _rank_stocks_with_history(snapshot: list[dict]) -> list[dict]:
                 "low_vol":      s.get("_rank_lowvol", 0),
                 "kd":           s.get("_rank_kd", 0),
                 "obv":          s.get("_rank_obv", 0),
+                "pattern":      s.get("_rank_pattern", 0),
             },
         })
     return result

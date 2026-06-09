@@ -96,6 +96,14 @@ OBV_TREND_SCORES = {
     "neutral":          50,
 }
 
+# ── Candlestick pattern adjustment (B8 integration) ───────────────────────────
+# Patterns act as a post-hoc adjustment on the technical score after the 6
+# sub-indicators are aggregated. Bullish patterns add small positive points;
+# bearish patterns subtract. Doji is informational only (zero impact).
+PATTERN_ADJUSTMENT_LOOKBACK = 5      # only patterns in last N bars count
+PATTERN_ADJUSTMENT_PER_SIGNAL = 3    # each pattern occurrence adds/subtracts this
+PATTERN_ADJUSTMENT_CAP = 10          # absolute cap on total adjustment
+
 # ── MA alignment (4-state) scoring ────────────────────────────────────────────
 # Replaces the old additive MA_POINTS system with discrete state classification.
 MA_ALIGNMENT_SCORES = {
