@@ -348,7 +348,7 @@
             <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">🏆 潛力股篩選</h2>
             <div class="flex items-center gap-3">
               <span id="screener-updated" class="text-xs text-slate-600"></span>
-              <button onclick="loadScreener()" class="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded-lg text-slate-300 transition">重新整理</button>
+              <button id="screener-refresh-btn" onclick="refreshScreener()" class="text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1 rounded-lg text-slate-300 transition">重新整理</button>
             </div>
           </div>
           <div id="screener-table" class="overflow-x-auto"></div>
@@ -373,7 +373,7 @@ const MA_COLORS = { ma5: '#f59e0b', ma10: '#3b82f6', ma20: '#a855f7', ma60: '#ec
 const BB_COLOR = '#06b6d4';
 
 // ── State ────────────────────────────────────────────────────────────────────
-let isMock = localStorage.getItem('stock-insights-mock') !== 'false';  // default true, persist across reload
+let isMock = true;  // always default to MOCK on page load; toggle is runtime-only, not persisted
 let currentPeriod = '3M';
 let currentTicker = 'AAPL';
 let currentData = null;          // full API response (cached)
@@ -539,7 +539,6 @@ document.getElementById('overlay-chips').addEventListener('click', e => {
 // ── Mock toggle ──────────────────────────────────────────────────────────────
 function toggleMock() {
   isMock = !isMock;
-  localStorage.setItem('stock-insights-mock', String(isMock));
   document.getElementById('toggle-track').className = `w-10 h-5 rounded-full transition-colors duration-200 ${isMock ? 'bg-amber-500' : 'bg-slate-600'}`;
   document.getElementById('toggle-dot').className = `absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${isMock ? 'translate-x-5' : 'translate-x-0'}`;
   document.getElementById('mock-badge').className = `text-xs font-semibold px-2.5 py-1 rounded-full border ${isMock ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' : 'bg-slate-700 text-slate-500 border-slate-600'}`;
@@ -1055,6 +1054,48 @@ async function loadWatchlistComparison() {
 }
 
 // ── Render: stock screener ───────────────────────────────────────────────────
+// LIVE 模式：先觸發後端增量抓取，再 reload screener
+// MOCK 模式：直接 reload（mock 資料用不到 SQLite）
+async function refreshScreener() {
+  const btn = document.getElementById('screener-refresh-btn');
+  const updated = document.getElementById('screener-updated');
+  const originalLabel = btn.textContent;
+
+  btn.disabled = true;
+
+  try {
+    if (!isMock) {
+      btn.textContent = '抓取中…';
+      updated.textContent = '正在從 TWSE/TPEX 增量更新…';
+      try {
+        const r = await fetch('/api/refresh-tw-data', { method: 'POST' });
+        if (r.ok) {
+          const d = await r.json();
+          if (d.bootstrap_required) {
+            updated.textContent = '⚠️ DB 為空，請先跑 python scripts/update_tw_history.py --backfill 60';
+          } else if (d.success > 0) {
+            updated.textContent = `✅ 新增 ${d.success} 個交易日（最新：${d.latest_date}）`;
+          } else if (d.dates_attempted === 0) {
+            updated.textContent = `已是最新（${d.latest_date}）`;
+          } else if (d.failed && d.failed.length) {
+            updated.textContent = `⚠️ ${d.failed.length} 個日期抓取失敗`;
+          }
+        } else {
+          updated.textContent = '⚠️ 增量更新失敗';
+        }
+      } catch (err) {
+        console.error('Refresh TW data failed:', err);
+        updated.textContent = '⚠️ 增量更新失敗';
+      }
+    }
+    btn.textContent = '重新計算中…';
+    await loadScreener();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+
 async function loadScreener() {
   try {
     const res = await fetch(`/api/stock-screener?mock=${isMock}`);

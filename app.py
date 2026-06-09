@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from typing import List
 
 from dotenv import load_dotenv
@@ -17,12 +18,52 @@ from fastapi.staticfiles import StaticFiles
 
 import logging
 
+# Ensure our application loggers (stock_fetcher.*, app, etc.) are visible alongside uvicorn's.
+# Idempotent: only configures the root logger if it has no handlers yet.
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
 from mock_data import (
     get_mock_response, get_mock_batch_quotes, get_mock_chart_data,
     get_mock_peer_comparison, get_mock_watchlist_comparison, get_mock_screener,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ── Startup background refresh ───────────────────────────────────────────────
+# Trigger an incremental TW data fetch on server startup so the screener has
+# up-to-date data without waiting for the user to click "重新整理".
+# Runs as a fire-and-forget task: failures are logged, never block startup.
+
+async def _startup_refresh_tw_data() -> None:
+    try:
+        from stock_fetcher.tw_market import run_incremental_update
+        result = await asyncio.to_thread(run_incremental_update)
+        if result.get("bootstrap_required"):
+            logger.warning(
+                "Startup refresh skipped: DB is empty. "
+                "Run `python scripts/update_tw_history.py --backfill 60` first."
+            )
+        elif result["dates_attempted"] == 0:
+            logger.info("Startup refresh: already up to date (latest=%s)", result["latest_date"])
+        else:
+            logger.info(
+                "Startup refresh: %d added, %d skipped, %d failed, latest=%s",
+                result["success"], result["skipped"], len(result["failed"]), result["latest_date"],
+            )
+    except Exception as exc:
+        logger.warning("Startup refresh failed (non-fatal): %s", exc)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    asyncio.create_task(_startup_refresh_tw_data())
+    yield
 
 
 def _normalize_ticker(raw: str) -> str:
@@ -41,7 +82,7 @@ def _normalize_ticker(raw: str) -> str:
 
 VALID_PERIODS = {"1M", "3M", "6M", "1Y", "YTD"}
 
-app = FastAPI(title="Stock Insights API", version="2.1.0")
+app = FastAPI(title="Stock Insights API", version="2.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -188,6 +229,17 @@ async def get_watchlist_comparison(
     except Exception as exc:
         logger.exception("Watchlist comparison error")
         raise HTTPException(status_code=502, detail="Service temporarily unavailable") from exc
+
+
+# ── Refresh TW market data (incremental fetch from latest DB date → today) ────
+@app.post("/api/refresh-tw-data")
+async def refresh_tw_data() -> dict:
+    try:
+        from stock_fetcher.tw_market import run_incremental_update
+        return await asyncio.to_thread(run_incremental_update)
+    except Exception as exc:
+        logger.exception("TW data refresh failed")
+        raise HTTPException(status_code=502, detail="TW data refresh failed") from exc
 
 
 # ── Stock screener ────────────────────────────────────────────────────────────

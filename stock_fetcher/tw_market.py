@@ -20,6 +20,68 @@ import requests
 
 from . import tw_db
 
+
+# ── Incremental update (shared by CLI and API) ────────────────────────────────
+
+def run_incremental_update() -> dict:
+    """Fetch trading days from the DB's latest date + 1 up to today.
+
+    Designed for non-blocking calls from the web API. Skips weekends/holidays
+    automatically. Per-day errors are isolated so a single failure doesn't
+    abort the whole batch.
+
+    Returns
+    -------
+    dict with keys:
+      - dates_attempted   : int    number of trading days inspected
+      - success           : int    days successfully written to DB
+      - skipped           : int    non-trading days / empty payloads
+      - failed            : list[str]  ISO dates that failed (for retry)
+      - latest_date       : str | None  newest date in DB after update
+      - bootstrap_required: bool   True if DB is empty (refuse to bootstrap)
+    """
+    today = date.today()
+    latest = tw_db.get_latest_date()
+
+    if latest is None:
+        return {
+            "dates_attempted": 0, "success": 0, "skipped": 0, "failed": [],
+            "latest_date": None, "bootstrap_required": True,
+        }
+
+    start = datetime.strptime(latest, "%Y-%m-%d").date() + timedelta(days=1)
+    if start > today:
+        return {
+            "dates_attempted": 0, "success": 0, "skipped": 0, "failed": [],
+            "latest_date": latest, "bootstrap_required": False,
+        }
+
+    dates = tw_db.list_trading_days(start, today)
+    success = 0
+    skipped = 0
+    failed: list[str] = []
+
+    for d in dates:
+        try:
+            result = fetch_for_date(d)
+            if not result["trading_day"] or not result["prices"]:
+                skipped += 1
+                continue
+            tw_db.upsert_daily_prices(result["prices"])
+            success += 1
+        except Exception as exc:
+            logger.error("Incremental update failed for %s: %s", d, exc)
+            failed.append(d.isoformat())
+
+    return {
+        "dates_attempted": len(dates),
+        "success": success,
+        "skipped": skipped,
+        "failed": failed,
+        "latest_date": tw_db.get_latest_date(),
+        "bootstrap_required": False,
+    }
+
 logger = logging.getLogger(__name__)
 
 _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
