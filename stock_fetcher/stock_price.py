@@ -47,7 +47,10 @@ def fetch_stock_price(symbol: str, period: str = "3M") -> dict:
         })
 
     closes = [k["close"] for k in all_klines]
-    indicators = compute_all(closes)
+    highs = [k["high"] for k in all_klines]
+    lows = [k["low"] for k in all_klines]
+    volumes = [k["volume"] for k in all_klines]
+    indicators = compute_all(closes, highs=highs, lows=lows, volumes=volumes)
 
     # trim warm-up: only return the requested calendar range
     if period == "YTD":
@@ -88,9 +91,18 @@ def _trim_indicators(indicators: dict, start: int, total: int) -> dict:
     def _slice(lst):
         return lst[start:]
 
-    return {
+    trimmed = {
         "ma": {k: _slice(v) for k, v in indicators["ma"].items()},
         "rsi": _slice(indicators["rsi"]),
         "macd": {k: _slice(v) for k, v in indicators["macd"].items()},
         "bollinger": {k: _slice(v) for k, v in indicators["bollinger"].items()},
     }
+    if "kd" in indicators:
+        trimmed["kd"] = {k: _slice(v) for k, v in indicators["kd"].items()}
+    if "obv" in indicators:
+        trimmed["obv"] = _slice(indicators["obv"])
+    if "ma_alignment" in indicators:
+        # status is a dict (not a list) — recompute on trimmed closes via caller, or pass through.
+        # Trimmed slice doesn't change the "latest" status, so just pass through.
+        trimmed["ma_alignment"] = indicators["ma_alignment"]
+    return trimmed

@@ -64,6 +64,9 @@ def init_db() -> None:
                 CREATE TABLE IF NOT EXISTS daily_prices (
                     symbol      TEXT NOT NULL,
                     date        TEXT NOT NULL,
+                    open        REAL,
+                    high        REAL,
+                    low         REAL,
                     close       REAL,
                     change_pct  REAL,
                     volume      INTEGER,
@@ -77,8 +80,22 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_daily_symbol ON daily_prices(symbol);
                 CREATE INDEX IF NOT EXISTS idx_companies_industry ON companies(industry);
             """)
+            _migrate_add_ohl_columns(conn)
         _initialized = True
         logger.info("SQLite DB initialized at %s", DB_PATH)
+
+
+def _migrate_add_ohl_columns(conn) -> None:
+    """v3.1 migration: add open/high/low columns if missing.
+
+    Idempotent — safe to call on every init. Existing rows get NULL for
+    OHL until next refresh fills them in.
+    """
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(daily_prices)")}
+    for col in ("open", "high", "low"):
+        if col not in existing:
+            conn.execute(f"ALTER TABLE daily_prices ADD COLUMN {col} REAL")
+            logger.info("Migrated: added column %s to daily_prices", col)
 
 
 # ── Company operations ───────────────────────────────────────────────────────
@@ -151,7 +168,8 @@ def upsert_daily_prices(prices: Iterable[dict]) -> int:
     init_db()
     rows = [
         (
-            p["symbol"], p["date"], p.get("close"),
+            p["symbol"], p["date"],
+            p.get("open"), p.get("high"), p.get("low"), p.get("close"),
             p.get("change_pct"), p.get("volume"),
             p.get("pe"), p.get("pb"), p.get("yield_pct"),
         )
@@ -161,9 +179,12 @@ def upsert_daily_prices(prices: Iterable[dict]) -> int:
         return 0
     with get_conn() as conn:
         conn.executemany("""
-            INSERT INTO daily_prices (symbol, date, close, change_pct, volume, pe, pb, yield_pct)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO daily_prices (symbol, date, open, high, low, close, change_pct, volume, pe, pb, yield_pct)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(symbol, date) DO UPDATE SET
+                open = excluded.open,
+                high = excluded.high,
+                low = excluded.low,
                 close = excluded.close,
                 change_pct = excluded.change_pct,
                 volume = excluded.volume,
@@ -198,7 +219,7 @@ def get_history(symbol: str, days: int = 60) -> list[dict]:
     init_db()
     with get_conn() as conn:
         rows = conn.execute("""
-            SELECT date, close, change_pct, volume, pe, pb, yield_pct
+            SELECT date, open, high, low, close, change_pct, volume, pe, pb, yield_pct
             FROM daily_prices
             WHERE symbol = ?
             ORDER BY date DESC
@@ -222,7 +243,7 @@ def get_latest_snapshot() -> list[dict]:
             )
             SELECT
                 c.symbol, c.name, c.industry, c.market,
-                d.date, d.close, d.change_pct, d.volume,
+                d.date, d.open, d.high, d.low, d.close, d.change_pct, d.volume,
                 d.pe, d.pb, d.yield_pct
             FROM companies c
             JOIN latest l ON c.symbol = l.symbol

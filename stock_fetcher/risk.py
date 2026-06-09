@@ -18,6 +18,9 @@ from .risk_config import (
     HV_WINDOWS,
     SWING_LOOKBACK,
     TRADING_DAYS_PER_YEAR,
+    WARN_KD_DEATH_CROSS_THRESHOLD,
+    WARN_OBV_DIVERGENCE_LOOKBACK,
+    WARNING_TEMPLATES,
 )
 
 
@@ -236,6 +239,51 @@ def _latest_non_null(seq) -> float | None:
     return None
 
 
+# ── Warning signals (technical risk alerts) ───────────────────────────────────
+
+def compute_risk_warnings(kline: list[dict], indicators: dict | None) -> list[dict]:
+    """Detect technical risk warnings from B7 indicators.
+
+    Returns a list of warning dicts, each with keys:
+      type, severity, label, description, color
+
+    Empty list = no warnings detected. These do not affect numeric risk metrics.
+    """
+    warnings: list[dict] = []
+    if not kline or not indicators:
+        return warnings
+
+    # 1. KD high-zone death cross
+    kd = indicators.get("kd")
+    if isinstance(kd, dict):
+        k_vals = [v for v in kd.get("k", []) if v is not None]
+        d_vals = [v for v in kd.get("d", []) if v is not None]
+        if len(k_vals) >= 2 and len(d_vals) >= 2:
+            prev_k, latest_k = k_vals[-2], k_vals[-1]
+            prev_d, latest_d = d_vals[-2], d_vals[-1]
+            # death cross: K was above D, now below D, occurring in high zone
+            if (prev_k >= prev_d and latest_k < latest_d
+                    and latest_k > WARN_KD_DEATH_CROSS_THRESHOLD):
+                warnings.append(dict(WARNING_TEMPLATES["kd_death_cross"]))
+
+    # 2. OBV bearish divergence (price up + OBV down over lookback window)
+    obv_vals = [v for v in (indicators.get("obv") or []) if v is not None]
+    closes = [k["close"] for k in kline]
+    n = WARN_OBV_DIVERGENCE_LOOKBACK
+    if len(obv_vals) > n and len(closes) > n:
+        obv_change = obv_vals[-1] - obv_vals[-(n + 1)]
+        price_change = closes[-1] - closes[-(n + 1)]
+        if price_change > 0 and obv_change < 0:
+            warnings.append(dict(WARNING_TEMPLATES["obv_bearish_divergence"]))
+
+    # 3. MA bearish alignment
+    ma_align = indicators.get("ma_alignment")
+    if isinstance(ma_align, dict) and ma_align.get("status") == "bearish_alignment":
+        warnings.append(dict(WARNING_TEMPLATES["ma_bearish_alignment"]))
+
+    return warnings
+
+
 # ── Main entry ────────────────────────────────────────────────────────────────
 
 def compute_risk_metrics(kline: list[dict], indicators: dict | None = None) -> dict:
@@ -291,6 +339,7 @@ def compute_risk_metrics(kline: list[dict], indicators: dict | None = None) -> d
             "atr_14": atr,
             "methods": methods,
         },
+        "warnings": compute_risk_warnings(kline, indicators),
     }
 
 
@@ -299,4 +348,5 @@ def _empty_payload() -> dict:
         "volatility": {f"hv_{w}d": None for w in HV_WINDOWS} | {"level": dict(HV_UNKNOWN)},
         "drawdown": _empty_drawdown(),
         "suggestions": {"current_price": None, "atr_14": None, "methods": {}},
+        "warnings": [],
     }

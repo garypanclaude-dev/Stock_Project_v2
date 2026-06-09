@@ -90,20 +90,54 @@ _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit
 API_DELAY_SECONDS = 0.5
 
 # ── Screener config ───────────────────────────────────────────────────────────
+# v3.1 (B7 integration): 8 → 10 factors, added KD + OBV; ma_trend upgraded to
+# 4-state classification (bullish / bearish / tangled / neutral).
 SCREENER_CONFIG = {
     "min_volume": 500,
     "top_n": 20,
     "weights": {
-        "momentum_5d":  0.15,
-        "momentum_20d": 0.15,
-        "value":        0.15,
-        "pb_value":     0.10,
-        "quality":      0.15,
-        "volume_ratio": 0.10,
-        "ma_trend":     0.10,
-        "low_vol":      0.10,
+        "momentum_5d":  0.12,
+        "momentum_20d": 0.12,
+        "value":        0.13,
+        "pb_value":     0.08,
+        "quality":      0.13,
+        "volume_ratio": 0.08,
+        "ma_trend":     0.08,
+        "low_vol":      0.08,
+        "kd":           0.10,
+        "obv":          0.08,
     },
 }
+
+# KD raw → absolute factor score (used before percentile ranking)
+KD_FACTOR_SCORES = [
+    (20,  95),  # oversold
+    (30,  80),
+    (50,  70),
+    (70,  50),
+    (80,  30),
+    (101, 10),  # severely overbought
+]
+KD_FACTOR_DEFAULT = 50
+
+# OBV trend (price vs OBV slope over OBV_FACTOR_LOOKBACK days) → score
+OBV_FACTOR_LOOKBACK = 5
+OBV_FACTOR_SCORES = {
+    "rising":            80,
+    "divergence_bull":   70,
+    "neutral":           50,
+    "divergence_bear":   30,
+    "falling":           20,
+}
+
+# MA 4-state → score (replaces old binary ma_trend)
+MA_4STATE_SCORES = {
+    "bullish_alignment": 100,
+    "tangled":           50,
+    "neutral":           50,
+    "bearish_alignment": 0,
+}
+MA_TANGLED_THRESHOLD = 0.03  # spread/mean < 3% → tangled
 
 # TWSE/TPEX industry code → name mapping (shared across both markets)
 INDUSTRY_NAMES = {
@@ -265,6 +299,13 @@ def _fetch_twse_daily_for_date(target_date: date) -> list[dict]:
 
 
 def _parse_twse_row(row: list) -> dict | None:
+    """Parse TWSE MI_INDEX row.
+
+    Standard 16-field format:
+      [0] code, [1] name, [2] volume_shares, [3] trade_count, [4] turnover,
+      [5] open, [6] high, [7] low, [8] close, [9] direction, [10] change,
+      [11..15] bid/ask/PE etc.
+    """
     try:
         code = row[0].strip()
         name = row[1].strip()
@@ -272,6 +313,9 @@ def _parse_twse_row(row: list) -> dict | None:
         if not code.isdigit() or len(code) != 4:
             return None
 
+        open_p = _parse_tw_number(row[5]) if len(row) > 5 else None
+        high   = _parse_tw_number(row[6]) if len(row) > 6 else None
+        low    = _parse_tw_number(row[7]) if len(row) > 7 else None
         close = _parse_tw_number(row[8])
         volume_shares = _parse_tw_number(row[2])
         change = _parse_tw_number(row[10]) if len(row) > 10 else None
@@ -290,6 +334,9 @@ def _parse_twse_row(row: list) -> dict | None:
         return {
             "symbol": f"{code}.TW",
             "name": name,
+            "open": open_p,
+            "high": high,
+            "low": low,
             "close": close,
             "change_pct": change_pct,
             "volume": volume,
@@ -330,6 +377,12 @@ def _fetch_tpex_daily_for_date(target_date: date) -> list[dict]:
 
 
 def _parse_tpex_row(row: list) -> dict | None:
+    """Parse TPEX otc_quotes row.
+
+    Standard 16-field format:
+      [0] code, [1] name, [2] close, [3] change, [4] open, [5] high, [6] low,
+      [7] volume_shares, [8] turnover, [9] trade_count, [10..] bid/ask etc.
+    """
     try:
         code = row[0].strip()
         name = row[1].strip()
@@ -339,6 +392,9 @@ def _parse_tpex_row(row: list) -> dict | None:
 
         close = _parse_tw_number(row[2])
         change = _parse_tw_number(row[3])
+        open_p = _parse_tw_number(row[4]) if len(row) > 4 else None
+        high   = _parse_tw_number(row[5]) if len(row) > 5 else None
+        low    = _parse_tw_number(row[6]) if len(row) > 6 else None
         volume_shares = _parse_tw_number(row[7])
 
         if close is None or close <= 0 or volume_shares is None:
@@ -351,6 +407,9 @@ def _parse_tpex_row(row: list) -> dict | None:
         return {
             "symbol": f"{code}.TW",
             "name": name,
+            "open": open_p,
+            "high": high,
+            "low": low,
             "close": close,
             "change_pct": change_pct,
             "volume": volume,
@@ -436,19 +495,24 @@ def _compute_multi_day_factors(symbol: str) -> dict:
     """
     Compute factors that require historical data:
       - momentum_5d, momentum_20d
-      - ma5, ma20, ma_trend (price > MA5 > MA20)
+      - ma5/10/20/60, ma_trend (4-state alignment classification)
       - volume_ratio (today / 20d avg)
       - volatility_20d (std of change_pct)
+      - kd (latest K value → absolute score)
+      - obv (5-day trend vs price slope → absolute score)
     """
-    history = tw_db.get_history(symbol, days=25)  # need at least 20 days
+    # Extended to 65 days to support MA60 + KD warm-up.
+    history = tw_db.get_history(symbol, days=65)
     if len(history) < 2:
         return {}
 
     # history is newest first; reverse for chronological
     history = list(reversed(history))
-    closes = [h["close"] for h in history if h["close"] is not None]
+    closes  = [h["close"]  for h in history if h["close"]  is not None]
     volumes = [h["volume"] for h in history if h["volume"] is not None]
     changes = [h["change_pct"] for h in history if h["change_pct"] is not None]
+    # Full OHLCV rows for KD/OBV (need aligned arrays)
+    full_rows = [h for h in history if all(h.get(k) is not None for k in ("open", "high", "low", "close", "volume"))]
 
     result = {}
 
@@ -458,16 +522,31 @@ def _compute_multi_day_factors(symbol: str) -> dict:
     if len(closes) >= 21:
         result["momentum_20d"] = round((closes[-1] / closes[-21] - 1) * 100, 2)
 
-    # Moving averages
-    if len(closes) >= 5:
-        ma5 = sum(closes[-5:]) / 5
-        result["ma5"] = round(ma5, 2)
-    if len(closes) >= 20:
-        ma20 = sum(closes[-20:]) / 20
-        result["ma20"] = round(ma20, 2)
+    # Moving averages (5/10/20/60 — extended for 4-state alignment)
+    for w in (5, 10, 20, 60):
+        if len(closes) >= w:
+            result[f"ma{w}"] = round(sum(closes[-w:]) / w, 2)
 
-    # MA trend score (0/50/100): price > MA5 > MA20 = bullish alignment
-    if "ma5" in result and "ma20" in result:
+    # MA trend (4-state): tangled > bullish > bearish > neutral
+    ma_keys = ("ma5", "ma10", "ma20", "ma60")
+    if all(k in result for k in ma_keys):
+        ma_vals = [result[k] for k in ma_keys]
+        price = closes[-1]
+        mean = sum(ma_vals) / 4
+        spread = (max(ma_vals) - min(ma_vals)) / mean if mean else 1.0
+
+        if spread < MA_TANGLED_THRESHOLD:
+            status = "tangled"
+        elif price > ma_vals[0] > ma_vals[1] > ma_vals[2] > ma_vals[3]:
+            status = "bullish_alignment"
+        elif price < ma_vals[0] < ma_vals[1] < ma_vals[2] < ma_vals[3]:
+            status = "bearish_alignment"
+        else:
+            status = "neutral"
+        result["ma_status"] = status
+        result["ma_trend"] = MA_4STATE_SCORES[status]
+    elif "ma5" in result and "ma20" in result:
+        # Fallback for shorter history (legacy binary scoring)
         price = closes[-1]
         if price > result["ma5"] > result["ma20"]:
             result["ma_trend"] = 100
@@ -489,7 +568,52 @@ def _compute_multi_day_factors(symbol: str) -> dict:
         variance = sum((x - mean) ** 2 for x in recent) / len(recent)
         result["volatility_20d"] = round(variance ** 0.5, 2)
 
+    # KD (latest K value, period=9) — requires OHL
+    if len(full_rows) >= 9:
+        from .indicators import stochastic_kd
+        kd = stochastic_kd(
+            [r["high"] for r in full_rows],
+            [r["low"]  for r in full_rows],
+            [r["close"] for r in full_rows],
+        )
+        k_vals = [v for v in kd["k"] if v is not None]
+        if k_vals:
+            result["kd_value"] = k_vals[-1]
+            result["kd"] = _lookup_factor_score(k_vals[-1], KD_FACTOR_SCORES, KD_FACTOR_DEFAULT)
+
+    # OBV trend — compare 5-day OBV slope vs price slope
+    if len(full_rows) >= OBV_FACTOR_LOOKBACK + 1:
+        from .indicators import obv as compute_obv
+        obv_series = compute_obv(
+            [r["close"]  for r in full_rows],
+            [r["volume"] for r in full_rows],
+        )
+        valid_obv = [v for v in obv_series if v is not None]
+        if len(valid_obv) >= OBV_FACTOR_LOOKBACK + 1:
+            price_change = full_rows[-1]["close"] - full_rows[-OBV_FACTOR_LOOKBACK - 1]["close"]
+            obv_change = valid_obv[-1] - valid_obv[-OBV_FACTOR_LOOKBACK - 1]
+            if price_change > 0 and obv_change > 0:
+                trend = "rising"
+            elif price_change < 0 and obv_change < 0:
+                trend = "falling"
+            elif price_change > 0 and obv_change < 0:
+                trend = "divergence_bear"
+            elif price_change < 0 and obv_change > 0:
+                trend = "divergence_bull"
+            else:
+                trend = "neutral"
+            result["obv_trend"] = trend
+            result["obv"] = OBV_FACTOR_SCORES[trend]
+
     return result
+
+
+def _lookup_factor_score(value: float, table: list[tuple], default: int) -> int:
+    """Look up a value in a (upper_bound_exclusive, score) table."""
+    for upper, score in table:
+        if value < upper:
+            return score
+    return default
 
 
 # ── Multi-factor ranking ──────────────────────────────────────────────────────
@@ -515,6 +639,8 @@ def _rank_stocks_with_history(snapshot: list[dict]) -> list[dict]:
     _assign_percentile(eligible, "volume_ratio", "_rank_volratio", reverse=False)
     _assign_percentile(eligible, "ma_trend", "_rank_ma", reverse=False)
     _assign_percentile(eligible, "volatility_20d", "_rank_lowvol", reverse=True)
+    _assign_percentile(eligible, "kd", "_rank_kd", reverse=False)
+    _assign_percentile(eligible, "obv", "_rank_obv", reverse=False)
 
     # Composite score
     for s in eligible:
@@ -527,6 +653,8 @@ def _rank_stocks_with_history(snapshot: list[dict]) -> list[dict]:
             + s.get("_rank_volratio",50)* w["volume_ratio"]
             + s.get("_rank_ma", 50)     * w["ma_trend"]
             + s.get("_rank_lowvol", 50) * w["low_vol"]
+            + s.get("_rank_kd", 50)     * w["kd"]
+            + s.get("_rank_obv", 50)    * w["obv"]
         )
 
     eligible.sort(key=lambda s: s["score"], reverse=True)
@@ -552,6 +680,8 @@ def _rank_stocks_with_history(snapshot: list[dict]) -> list[dict]:
                 "volume_ratio": s.get("_rank_volratio", 0),
                 "ma_trend":     s.get("_rank_ma", 0),
                 "low_vol":      s.get("_rank_lowvol", 0),
+                "kd":           s.get("_rank_kd", 0),
+                "obv":          s.get("_rank_obv", 0),
             },
         })
     return result

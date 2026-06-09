@@ -37,7 +37,10 @@ def _generate_klines(base_price: float, seed: str, days: int) -> list[dict]:
 
 def _attach_indicators(klines: list[dict]) -> dict:
     closes = [k["close"] for k in klines]
-    return compute_all(closes)
+    highs = [k["high"] for k in klines]
+    lows = [k["low"] for k in klines]
+    volumes = [k["volume"] for k in klines]
+    return compute_all(closes, highs=highs, lows=lows, volumes=volumes)
 
 
 def _trim_to_period(klines: list[dict], indicators: dict, period: str) -> tuple[list[dict], dict]:
@@ -63,6 +66,12 @@ def _trim_to_period(klines: list[dict], indicators: dict, period: str) -> tuple[
         "macd": {k: _s(v) for k, v in indicators["macd"].items()},
         "bollinger": {k: _s(v) for k, v in indicators["bollinger"].items()},
     }
+    if "kd" in indicators:
+        trimmed_ind["kd"] = {k: _s(v) for k, v in indicators["kd"].items()}
+    if "obv" in indicators:
+        trimmed_ind["obv"] = _s(indicators["obv"])
+    if "ma_alignment" in indicators:
+        trimmed_ind["ma_alignment"] = indicators["ma_alignment"]
     return klines[start_idx:], trimmed_ind
 
 

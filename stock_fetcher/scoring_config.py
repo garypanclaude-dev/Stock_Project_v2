@@ -26,11 +26,15 @@ GRADES = [
 ]
 
 # ── Technical sub-indicator weights ───────────────────────────────────────────
+# v2.0 (B7 integration): 4 → 6 sub-indicators, added KD + OBV.
+# MA alignment upgraded to 4-state (bullish / bearish / tangled / neutral).
 TECH_WEIGHTS = {
-    "rsi": 0.25,
-    "macd": 0.25,
-    "ma_alignment": 0.30,
-    "bollinger": 0.20,
+    "rsi":          0.15,
+    "macd":         0.15,
+    "ma_alignment": 0.20,
+    "bollinger":    0.15,
+    "kd":           0.20,
+    "obv":          0.15,
 }
 
 # RSI score lookup: (upper_bound_exclusive, score)
@@ -52,15 +56,8 @@ MACD_BEARISH_SHRINKING = 45
 MACD_BEARISH_EXPANDING = 20
 MACD_DEFAULT = 50
 
-# MA alignment: points per condition
-MA_POINTS = {
-    "price_above_ma5":  15,
-    "price_above_ma10": 15,
-    "price_above_ma20": 20,
-    "price_above_ma60": 25,
-    "ma5_above_ma20":   15,
-    "ma20_above_ma60":  10,
-}
+# MA alignment scoring moved to MA_ALIGNMENT_SCORES below (v2.0 — 4-state classification).
+# Legacy additive MA_POINTS removed; see scoring._score_ma_alignment for new logic.
 
 # Bollinger band position → score: (upper_bound_exclusive, score)
 BB_SCORES = [
@@ -71,6 +68,43 @@ BB_SCORES = [
     (1.01, 30),  # > 90%
 ]
 BB_DEFAULT = 50
+
+# ── KD (Stochastic) scoring ───────────────────────────────────────────────────
+# K value lookup: (upper_bound_exclusive, score)
+KD_SCORES = [
+    (20,  85),  # K < 20 oversold — strong rebound chance
+    (30,  75),
+    (50,  60),
+    (70,  50),
+    (80,  35),  # K > 70 elevated
+    (101, 20),  # K > 80 severely overbought
+]
+KD_DEFAULT = 50
+KD_GOLDEN_CROSS_BONUS = 10    # K crosses above D in last 2 bars (low region)
+KD_DEATH_CROSS_PENALTY = 10   # K crosses below D in last 2 bars (high region)
+KD_CROSS_LOW_THRESHOLD = 50   # only count golden cross as bullish if happening below this
+KD_CROSS_HIGH_THRESHOLD = 50  # only count death cross as bearish if happening above this
+
+# ── OBV trend scoring ─────────────────────────────────────────────────────────
+# Compares OBV slope direction vs price slope direction over last N days.
+OBV_LOOKBACK = 5
+OBV_TREND_SCORES = {
+    "rising":           75,  # price up + OBV up = healthy momentum
+    "falling":          25,  # price down + OBV down = weak / distribution
+    "divergence_bear":  30,  # price up + OBV down = bearish divergence (risk)
+    "divergence_bull":  70,  # price down + OBV up = bullish divergence (accumulation)
+    "neutral":          50,
+}
+
+# ── MA alignment (4-state) scoring ────────────────────────────────────────────
+# Replaces the old additive MA_POINTS system with discrete state classification.
+MA_ALIGNMENT_SCORES = {
+    "bullish_alignment": 90,  # MA5>MA10>MA20>MA60 and price>MA5
+    "bearish_alignment": 15,  # MA5<MA10<MA20<MA60 and price<MA5
+    "tangled":           50,  # spread < 3% → variance signal
+    "neutral":           50,  # crossed / partial alignment
+}
+MA_ALIGNMENT_DEFAULT = 50
 
 # ── Fundamental sub-indicator weights ─────────────────────────────────────────
 FUND_WEIGHTS = {

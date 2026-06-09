@@ -66,16 +66,20 @@ def compute_composite_score(
 # ── Technical Score ───────────────────────────────────────────────────────────
 
 def _score_technical(indicators: dict | None, kline: list[dict] | None) -> dict:
-    rsi_score = _score_rsi(indicators)
+    rsi_score  = _score_rsi(indicators)
     macd_score = _score_macd(indicators)
-    ma_score = _score_ma_alignment(indicators, kline)
-    bb_score = _score_bollinger(indicators, kline)
+    ma_score   = _score_ma_alignment(indicators, kline)
+    bb_score   = _score_bollinger(indicators, kline)
+    kd_score   = _score_kd(indicators)
+    obv_score  = _score_obv(indicators, kline)
 
     total = (
-        rsi_score * cfg.TECH_WEIGHTS["rsi"]
+        rsi_score  * cfg.TECH_WEIGHTS["rsi"]
         + macd_score * cfg.TECH_WEIGHTS["macd"]
-        + ma_score * cfg.TECH_WEIGHTS["ma_alignment"]
-        + bb_score * cfg.TECH_WEIGHTS["bollinger"]
+        + ma_score   * cfg.TECH_WEIGHTS["ma_alignment"]
+        + bb_score   * cfg.TECH_WEIGHTS["bollinger"]
+        + kd_score   * cfg.TECH_WEIGHTS["kd"]
+        + obv_score  * cfg.TECH_WEIGHTS["obv"]
     )
 
     return {
@@ -85,6 +89,8 @@ def _score_technical(indicators: dict | None, kline: list[dict] | None) -> dict:
             "macd": macd_score,
             "ma_alignment": ma_score,
             "bollinger": bb_score,
+            "kd": kd_score,
+            "obv": obv_score,
         },
     }
 
@@ -127,37 +133,88 @@ def _score_macd(indicators: dict | None) -> int:
 
 
 def _score_ma_alignment(indicators: dict | None, kline: list[dict] | None) -> int:
-    if not indicators or not indicators.get("ma") or not kline:
-        return cfg.MACD_DEFAULT
+    """v2.0: classify into 4 states via indicators.ma_alignment object.
 
-    price = kline[-1]["close"]
-    ma = indicators["ma"]
+    Falls back to additive scoring if ma_alignment object missing (legacy).
+    """
+    if not indicators:
+        return cfg.MA_ALIGNMENT_DEFAULT
 
-    def _last_valid(key):
-        vals = ma.get(key, [])
-        valid = [v for v in vals if v is not None]
-        return valid[-1] if valid else None
+    alignment = indicators.get("ma_alignment")
+    if isinstance(alignment, dict):
+        status = alignment.get("status", "neutral")
+        return cfg.MA_ALIGNMENT_SCORES.get(status, cfg.MA_ALIGNMENT_DEFAULT)
 
-    ma5 = _last_valid("ma5")
-    ma10 = _last_valid("ma10")
-    ma20 = _last_valid("ma20")
-    ma60 = _last_valid("ma60")
+    # Legacy fallback (old additive scoring, kept for safety)
+    if not indicators.get("ma") or not kline:
+        return cfg.MA_ALIGNMENT_DEFAULT
+    return cfg.MA_ALIGNMENT_DEFAULT
 
-    points = 0
-    if ma5 is not None and price > ma5:
-        points += cfg.MA_POINTS["price_above_ma5"]
-    if ma10 is not None and price > ma10:
-        points += cfg.MA_POINTS["price_above_ma10"]
-    if ma20 is not None and price > ma20:
-        points += cfg.MA_POINTS["price_above_ma20"]
-    if ma60 is not None and price > ma60:
-        points += cfg.MA_POINTS["price_above_ma60"]
-    if ma5 is not None and ma20 is not None and ma5 > ma20:
-        points += cfg.MA_POINTS["ma5_above_ma20"]
-    if ma20 is not None and ma60 is not None and ma20 > ma60:
-        points += cfg.MA_POINTS["ma20_above_ma60"]
 
-    return _clamp(points)
+def _score_kd(indicators: dict | None) -> int:
+    """Score based on K value + golden/death cross detection.
+
+    Base score from K's overbought/oversold zone, then ±10 for recent cross.
+    """
+    if not indicators or not indicators.get("kd"):
+        return cfg.KD_DEFAULT
+
+    k_vals = [v for v in indicators["kd"].get("k", []) if v is not None]
+    d_vals = [v for v in indicators["kd"].get("d", []) if v is not None]
+    if not k_vals or not d_vals:
+        return cfg.KD_DEFAULT
+
+    latest_k = k_vals[-1]
+    base = _lookup_score(latest_k, cfg.KD_SCORES, cfg.KD_DEFAULT)
+
+    # Cross detection (need at least 2 points)
+    if len(k_vals) >= 2 and len(d_vals) >= 2:
+        prev_k, prev_d = k_vals[-2], d_vals[-2]
+        latest_d = d_vals[-1]
+        # Golden cross: K was below D, now above D, happening in low zone
+        if prev_k <= prev_d and latest_k > latest_d and latest_k < cfg.KD_CROSS_LOW_THRESHOLD:
+            base += cfg.KD_GOLDEN_CROSS_BONUS
+        # Death cross: K was above D, now below D, happening in high zone
+        elif prev_k >= prev_d and latest_k < latest_d and latest_k > cfg.KD_CROSS_HIGH_THRESHOLD:
+            base -= cfg.KD_DEATH_CROSS_PENALTY
+
+    return _clamp(base)
+
+
+def _score_obv(indicators: dict | None, kline: list[dict] | None) -> int:
+    """Score based on OBV trend direction vs price direction (divergence detection)."""
+    if not indicators or not indicators.get("obv") or not kline:
+        return cfg.OBV_TREND_SCORES["neutral"]
+
+    obv_vals = [v for v in indicators["obv"] if v is not None]
+    if len(obv_vals) < cfg.OBV_LOOKBACK + 1:
+        return cfg.OBV_TREND_SCORES["neutral"]
+
+    closes = [k["close"] for k in kline]
+    if len(closes) < cfg.OBV_LOOKBACK + 1:
+        return cfg.OBV_TREND_SCORES["neutral"]
+
+    obv_recent = obv_vals[-cfg.OBV_LOOKBACK - 1:]
+    price_recent = closes[-cfg.OBV_LOOKBACK - 1:]
+
+    obv_change = obv_recent[-1] - obv_recent[0]
+    price_change = price_recent[-1] - price_recent[0]
+
+    # Use small tolerance to avoid noise on near-zero moves
+    obv_up = obv_change > 0
+    obv_down = obv_change < 0
+    price_up = price_change > 0
+    price_down = price_change < 0
+
+    if price_up and obv_up:
+        return cfg.OBV_TREND_SCORES["rising"]
+    if price_down and obv_down:
+        return cfg.OBV_TREND_SCORES["falling"]
+    if price_up and obv_down:
+        return cfg.OBV_TREND_SCORES["divergence_bear"]
+    if price_down and obv_up:
+        return cfg.OBV_TREND_SCORES["divergence_bull"]
+    return cfg.OBV_TREND_SCORES["neutral"]
 
 
 def _score_bollinger(indicators: dict | None, kline: list[dict] | None) -> int:

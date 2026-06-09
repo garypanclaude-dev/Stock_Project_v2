@@ -38,3 +38,40 @@ FIXED_PCT = {"stop_pct": 0.08, "target_pct": 0.15}
 
 # Method 4: Swing high/low lookback (trading days)
 SWING_LOOKBACK = 60
+
+# ── Warning signals (v1.1: technical risk alerts from B7 indicators) ──────────
+# These are non-numeric warnings shown alongside HV/MDD — they don't affect
+# the risk numbers themselves, just flag noteworthy technical signals.
+
+# KD death cross detection — when K crosses below D in the overbought zone.
+WARN_KD_DEATH_CROSS_THRESHOLD = 70   # only trigger when K > this when crossing
+
+# OBV bearish divergence — price up + OBV down over OBV_DIVERGENCE_LOOKBACK days.
+WARN_OBV_DIVERGENCE_LOOKBACK = 10
+
+# MA bearish alignment also triggers a warning.
+
+# Pre-built warning templates (rendered into the warnings list)
+WARNING_TEMPLATES = {
+    "kd_death_cross": {
+        "type": "kd_death_cross",
+        "severity": "warn",
+        "label": "KD 高檔死亡交叉",
+        "description": "K 線在高檔（>70）由上向下穿越 D 線，短期回調機率提高。",
+        "color": "#f97316",
+    },
+    "obv_bearish_divergence": {
+        "type": "obv_bearish_divergence",
+        "severity": "warn",
+        "label": "OBV 看空背離",
+        "description": "近期股價走高但 OBV 走低，量價未同步，上漲動能可能轉弱。",
+        "color": "#f97316",
+    },
+    "ma_bearish_alignment": {
+        "type": "ma_bearish_alignment",
+        "severity": "danger",
+        "label": "均線空頭排列",
+        "description": "MA5 < MA10 < MA20 < MA60 且股價跌破 MA5，趨勢已轉空。",
+        "color": "#ef4444",
+    },
+}
