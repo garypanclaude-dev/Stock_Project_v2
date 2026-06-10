@@ -93,23 +93,32 @@ API_DELAY_SECONDS = 0.5
 # v3.1 (B7 integration): 8 → 10 factors, added KD + OBV; ma_trend upgraded to
 # 4-state classification (bullish / bearish / tangled / neutral).
 # v3.2 (B8 integration): 10 → 11 factors, added candlestick pattern factor.
+# v3.3 (B9 integration): 11 → 13 factors, added yield_stability + pe_percentile_60d.
 SCREENER_CONFIG = {
     "min_volume": 500,
     "top_n": 20,
     "weights": {
-        "momentum_5d":  0.11,
-        "momentum_20d": 0.11,
-        "value":        0.12,
-        "pb_value":     0.08,
-        "quality":      0.12,
-        "volume_ratio": 0.08,
-        "ma_trend":     0.08,
-        "low_vol":      0.08,
-        "kd":           0.09,
-        "obv":          0.08,
-        "pattern":      0.05,
+        "momentum_5d":      0.10,
+        "momentum_20d":     0.10,
+        "value":            0.11,
+        "pb_value":         0.07,
+        "quality":          0.11,
+        "volume_ratio":     0.07,
+        "ma_trend":         0.08,
+        "low_vol":          0.07,
+        "kd":               0.08,
+        "obv":              0.07,
+        "pattern":          0.04,
+        "yield_stability":  0.05,
+        "pe_percentile":    0.05,
     },
 }
+
+# Yield stability — coefficient of variation over 60d (lower = more stable)
+YIELD_STABILITY_LOOKBACK = 60
+
+# PE 60d percentile — current PE rank within own 60d distribution
+PE_PERCENTILE_LOOKBACK = 60
 
 # Pattern factor scoring (within screener)
 PATTERN_FACTOR_LOOKBACK = 10        # scan last 10 bars
@@ -626,6 +635,24 @@ def _compute_multi_day_factors(symbol: str) -> dict:
             )
         result["pattern_count"] = {"bullish": bullish_count, "bearish": bearish_count}
 
+    # Yield stability (B9) — std dev of yield_pct over recent days (lower = more stable)
+    yields = [h.get("yield_pct") for h in history if h.get("yield_pct") is not None]
+    if len(yields) >= 10:
+        recent = yields[-YIELD_STABILITY_LOOKBACK:] if len(yields) > YIELD_STABILITY_LOOKBACK else yields
+        if recent:
+            avg = sum(recent) / len(recent)
+            variance = sum((x - avg) ** 2 for x in recent) / len(recent)
+            result["yield_stability"] = round(variance ** 0.5, 4)
+
+    # PE 60-day percentile (B9) — current PE rank within own 60d history
+    pes = [h.get("pe") for h in history if h.get("pe") is not None and h.get("pe") > 0]
+    if len(pes) >= 10:
+        recent_pes = pes[-PE_PERCENTILE_LOOKBACK:] if len(pes) > PE_PERCENTILE_LOOKBACK else pes
+        current_pe = recent_pes[-1]
+        sorted_pes = sorted(recent_pes)
+        below = sum(1 for x in sorted_pes if x < current_pe)
+        result["pe_percentile"] = round(below / len(sorted_pes) * 100, 1)
+
     # OBV trend — compare 5-day OBV slope vs price slope
     if len(full_rows) >= OBV_FACTOR_LOOKBACK + 1:
         from .indicators import obv as compute_obv
@@ -687,6 +714,10 @@ def _rank_stocks_with_history(snapshot: list[dict]) -> list[dict]:
     _assign_percentile(eligible, "kd", "_rank_kd", reverse=False)
     _assign_percentile(eligible, "obv", "_rank_obv", reverse=False)
     _assign_percentile(eligible, "pattern", "_rank_pattern", reverse=False)
+    # B9: yield_stability is reverse (lower std → higher rank);
+    #     pe_percentile is reverse (lower percentile = currently cheaper than own history → higher rank)
+    _assign_percentile(eligible, "yield_stability", "_rank_ystab", reverse=True)
+    _assign_percentile(eligible, "pe_percentile", "_rank_pep", reverse=True)
 
     # Composite score
     for s in eligible:
@@ -702,6 +733,8 @@ def _rank_stocks_with_history(snapshot: list[dict]) -> list[dict]:
             + s.get("_rank_kd", 50)     * w["kd"]
             + s.get("_rank_obv", 50)    * w["obv"]
             + s.get("_rank_pattern", 50)* w["pattern"]
+            + s.get("_rank_ystab", 50)  * w["yield_stability"]
+            + s.get("_rank_pep", 50)    * w["pe_percentile"]
         )
 
     eligible.sort(key=lambda s: s["score"], reverse=True)
@@ -727,9 +760,11 @@ def _rank_stocks_with_history(snapshot: list[dict]) -> list[dict]:
                 "volume_ratio": s.get("_rank_volratio", 0),
                 "ma_trend":     s.get("_rank_ma", 0),
                 "low_vol":      s.get("_rank_lowvol", 0),
-                "kd":           s.get("_rank_kd", 0),
-                "obv":          s.get("_rank_obv", 0),
-                "pattern":      s.get("_rank_pattern", 0),
+                "kd":               s.get("_rank_kd", 0),
+                "obv":              s.get("_rank_obv", 0),
+                "pattern":          s.get("_rank_pattern", 0),
+                "yield_stability":  s.get("_rank_ystab", 0),
+                "pe_percentile":    s.get("_rank_pep", 0),
             },
         })
     return result

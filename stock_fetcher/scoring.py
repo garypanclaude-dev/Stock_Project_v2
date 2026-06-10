@@ -307,12 +307,21 @@ def _score_fundamental(fundamentals: dict | None) -> dict:
 
 
 def _score_pe(fund: dict | None) -> int:
+    """v2.2: layer PE historical-percentile bonus on top of absolute PE score."""
     if not fund:
         return cfg.PE_DEFAULT
     pe = (fund.get("valuation") or {}).get("pe_ratio")
     if pe is None or pe < 0:
         return cfg.PE_DEFAULT
-    return _lookup_score(pe, cfg.PE_SCORES[1:], cfg.PE_DEFAULT)  # skip the <0 entry
+    base = _lookup_score(pe, cfg.PE_SCORES[1:], cfg.PE_DEFAULT)  # skip the <0 entry
+
+    # PE historical percentile bonus (B9)
+    pe_hist = fund.get("pe_history") or {}
+    percentile = pe_hist.get("current_percentile")
+    if percentile is not None:
+        bonus = _lookup_score(percentile, cfg.PE_PERCENTILE_BONUS, 0)
+        base += bonus
+    return _clamp(base)
 
 
 def _score_roe(fund: dict | None) -> int:
@@ -325,8 +334,17 @@ def _score_roe(fund: dict | None) -> int:
 
 
 def _score_revenue_trend(fund: dict | None) -> int:
+    """v2.2: combine QoQ (quarterly) base with annual YoY modifier."""
     if not fund:
         return cfg.REVENUE_TREND["no_data"]
+
+    base = _score_revenue_qoq(fund)
+    yoy_bonus = _score_revenue_yoy_bonus(fund)
+    return _clamp(base + yoy_bonus)
+
+
+def _score_revenue_qoq(fund: dict) -> int:
+    """QoQ trend base score from quarterly_financials."""
     quarters = fund.get("quarterly_financials") or []
     if len(quarters) < 2:
         return cfg.REVENUE_TREND["no_data"]
@@ -336,7 +354,6 @@ def _score_revenue_trend(fund: dict | None) -> int:
     if len(revenues) < 2:
         return cfg.REVENUE_TREND["no_data"]
 
-    # Count consecutive growth/decline from the most recent quarter
     growth_streak = 0
     decline_streak = 0
     for i in range(len(revenues) - 1, 0, -1):
@@ -363,6 +380,20 @@ def _score_revenue_trend(fund: dict | None) -> int:
     return cfg.REVENUE_TREND["flat"]
 
 
+def _score_revenue_yoy_bonus(fund: dict) -> int:
+    """Annual YoY bonus/penalty from annual_revenue_growth."""
+    annual = fund.get("annual_revenue_growth") or []
+    if not annual:
+        return 0
+    latest_yoy = annual[0].get("yoy_pct") if annual else None
+    if latest_yoy is None:
+        return 0
+    for threshold, key in cfg.REVENUE_YOY_THRESHOLDS:
+        if latest_yoy < threshold:
+            return cfg.REVENUE_YOY_BONUS[key]
+    return 0
+
+
 def _score_profit_margin(fund: dict | None) -> int:
     if not fund:
         return cfg.MARGIN_DEFAULT
@@ -373,12 +404,20 @@ def _score_profit_margin(fund: dict | None) -> int:
 
 
 def _score_dividend(fund: dict | None) -> int:
+    """v2.2: yield base score + consecutive-years stability bonus."""
     if not fund:
         return cfg.DIVIDEND_DEFAULT
     div_yield = (fund.get("dividend") or {}).get("dividend_yield")
     if div_yield is None:
         return cfg.DIVIDEND_DEFAULT
-    return _lookup_score(div_yield, cfg.DIVIDEND_SCORES, cfg.DIVIDEND_DEFAULT)
+    base = _lookup_score(div_yield, cfg.DIVIDEND_SCORES, cfg.DIVIDEND_DEFAULT)
+
+    # Consecutive-years bonus (B9)
+    consecutive = fund.get("dividend_consecutive_years")
+    if isinstance(consecutive, int) and consecutive > 0:
+        bonus = _lookup_score(consecutive, cfg.DIVIDEND_CONSECUTIVE_BONUS, 0)
+        base += bonus
+    return _clamp(base)
 
 
 # ── Sentiment Score ───────────────────────────────────────────────────────────

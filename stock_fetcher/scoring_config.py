@@ -115,12 +115,13 @@ MA_ALIGNMENT_SCORES = {
 MA_ALIGNMENT_DEFAULT = 50
 
 # ── Fundamental sub-indicator weights ─────────────────────────────────────────
+# v2.2 (B9): PE 25→20, dividend 15→20 (含穩定度加成); 營收趨勢 + ROE + margin 不變
 FUND_WEIGHTS = {
-    "pe": 0.25,
+    "pe": 0.20,
     "roe": 0.20,
     "revenue_trend": 0.25,
     "profit_margin": 0.15,
-    "dividend": 0.15,
+    "dividend": 0.20,
 }
 
 # P/E score lookup: (upper_bound_exclusive, score)
@@ -146,7 +147,7 @@ ROE_SCORES = [
 ]
 ROE_DEFAULT = 50
 
-# Revenue trend scores
+# Revenue trend scores (v2.2: combines QoQ + annual YoY signals)
 REVENUE_TREND = {
     "growth_3q": 90,
     "growth_2q": 75,
@@ -156,6 +157,24 @@ REVENUE_TREND = {
     "decline_2q_plus": 20,
     "no_data":   50,
 }
+
+# Annual YoY combined modifier (v2.2 — B9 integration)
+# After computing QoQ base score, apply YoY adjustment using annual data.
+# YoY > 10% = strong growth, < -10% = clear decline.
+REVENUE_YOY_BONUS = {
+    "strong_growth":  10,   # annual YoY > +20%
+    "moderate_growth": 5,   # +5% ~ +20%
+    "neutral":         0,   # -5% ~ +5%
+    "moderate_decline": -5, # -20% ~ -5%
+    "strong_decline": -10,  # < -20%
+}
+REVENUE_YOY_THRESHOLDS = [
+    (-20.0, "strong_decline"),
+    (-5.0,  "moderate_decline"),
+    (5.0,   "neutral"),
+    (20.0,  "moderate_growth"),
+    (9999.0, "strong_growth"),
+]
 
 # Profit margin score lookup: (upper_bound_exclusive, score)
 MARGIN_SCORES = [
@@ -176,6 +195,29 @@ DIVIDEND_SCORES = [
     (9999, 85),  # > 4%
 ]
 DIVIDEND_DEFAULT = 50
+
+# Dividend consecutive-years bonus (v2.2 — B9 integration)
+# Stable, multi-year dividend payouts are rewarded on top of the yield score.
+DIVIDEND_CONSECUTIVE_BONUS = [
+    (1,  0),    # first year of paying — no bonus yet
+    (3,  5),    # 1-2 years streak
+    (5,  10),   # 3-4 years streak
+    (10, 15),   # 5-9 years
+    (9999, 20), # 10+ years
+]
+DIVIDEND_BONUS_CAP = 100  # final score still clamped to 0-100
+
+# PE historical-percentile bonus (v2.2 — B9 integration)
+# Layered on top of the absolute PE score. If PE is in the historical 0-20
+# percentile (cheap vs own history), reward; in 80-100 (expensive vs own
+# history), penalise.
+PE_PERCENTILE_BONUS = [
+    (20,  15),   # PE 在歷史 0-20 分位 → 便宜 +15
+    (40,  8),
+    (60,  0),    # 60 percentile 附近 = 中性
+    (80,  -8),
+    (101, -15),  # PE 在歷史 80-100 分位 → 歷史最貴 -15
+]
 
 # ── Sentiment sub-indicator weights ───────────────────────────────────────────
 SENT_WEIGHTS = {

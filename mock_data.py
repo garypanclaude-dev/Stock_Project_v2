@@ -103,11 +103,31 @@ _AAPL_FUND: dict = {
         "beta": 1.24, "short_ratio": 1.58,
     },
     "quarterly_financials": [
-        {"period": "2026-Q1", "revenue": 124_300_000_000, "net_income": 33_900_000_000, "gross_profit": 58_100_000_000, "operating_income": 39_800_000_000, "ebitda": 44_200_000_000},
-        {"period": "2025-Q4", "revenue": 98_000_000_000, "net_income": 25_000_000_000, "gross_profit": 45_500_000_000, "operating_income": 30_900_000_000, "ebitda": 34_800_000_000},
-        {"period": "2025-Q3", "revenue": 94_900_000_000, "net_income": 23_600_000_000, "gross_profit": 43_900_000_000, "operating_income": 29_600_000_000, "ebitda": 33_200_000_000},
+        {"period": "2026-Q1", "revenue": 124_300_000_000, "net_income": 33_900_000_000, "gross_profit": 58_100_000_000, "operating_income": 39_800_000_000, "ebitda": 44_200_000_000, "qoq_pct": 26.84},
+        {"period": "2025-Q4", "revenue": 98_000_000_000, "net_income": 25_000_000_000, "gross_profit": 45_500_000_000, "operating_income": 30_900_000_000, "ebitda": 34_800_000_000, "qoq_pct": 3.27},
+        {"period": "2025-Q3", "revenue": 94_900_000_000, "net_income": 23_600_000_000, "gross_profit": 43_900_000_000, "operating_income": 29_600_000_000, "ebitda": 33_200_000_000, "qoq_pct": 10.6},
         {"period": "2025-Q2", "revenue": 85_800_000_000, "net_income": 21_400_000_000, "gross_profit": 39_400_000_000, "operating_income": 26_500_000_000, "ebitda": 30_100_000_000},
     ],
+    "annual_revenue_growth": [
+        {"year": 2025, "revenue": 416_000_000_000, "net_income": 112_000_000_000, "yoy_pct": 6.43, "ni_yoy_pct": 19.5},
+        {"year": 2024, "revenue": 391_000_000_000, "net_income": 93_700_000_000, "yoy_pct": 2.02, "ni_yoy_pct": -3.36},
+        {"year": 2023, "revenue": 383_000_000_000, "net_income": 96_900_000_000, "yoy_pct": -2.8},
+        {"year": 2022, "revenue": 394_000_000_000, "net_income": 99_800_000_000},
+    ],
+    "dividend_history": [
+        {"year": 2022, "amount": 0.91},
+        {"year": 2023, "amount": 0.95},
+        {"year": 2024, "amount": 0.99},
+        {"year": 2025, "amount": 1.03},
+        {"year": 2026, "amount": 0.53},
+    ],
+    "dividend_consecutive_years": 15,
+    "pe_history": {
+        "labels": [f"{y}-{m:02d}" for y in range(2021, 2026) for m in range(1, 13)][-60:],
+        "series": [28.5, 27.2, 26.8, 25.5, 24.9, 25.2, 26.1, 27.3, 28.0, 29.2, 30.5, 31.8] * 5,
+        "median": 28.4, "p10": 23.2, "p25": 25.2, "p75": 31.4, "p90": 34.0,
+        "current_pe": 35.08, "current_percentile": 94.4, "samples": 54,
+    },
     "query_time": "2026-05-21T10:00:00",
 }
 
@@ -125,11 +145,20 @@ _TSLA_FUND: dict = {
         "beta": 2.31, "short_ratio": 2.87,
     },
     "quarterly_financials": [
-        {"period": "2026-Q1", "revenue": 21_300_000_000, "net_income": 1_800_000_000, "gross_profit": 3_800_000_000, "operating_income": 1_600_000_000, "ebitda": 3_200_000_000},
-        {"period": "2025-Q4", "revenue": 25_200_000_000, "net_income": 2_500_000_000, "gross_profit": 4_700_000_000, "operating_income": 2_100_000_000, "ebitda": 3_900_000_000},
-        {"period": "2025-Q3", "revenue": 23_400_000_000, "net_income": 2_200_000_000, "gross_profit": 4_200_000_000, "operating_income": 1_900_000_000, "ebitda": 3_600_000_000},
+        {"period": "2026-Q1", "revenue": 21_300_000_000, "net_income": 1_800_000_000, "gross_profit": 3_800_000_000, "operating_income": 1_600_000_000, "ebitda": 3_200_000_000, "qoq_pct": -15.48},
+        {"period": "2025-Q4", "revenue": 25_200_000_000, "net_income": 2_500_000_000, "gross_profit": 4_700_000_000, "operating_income": 2_100_000_000, "ebitda": 3_900_000_000, "qoq_pct": 7.69},
+        {"period": "2025-Q3", "revenue": 23_400_000_000, "net_income": 2_200_000_000, "gross_profit": 4_200_000_000, "operating_income": 1_900_000_000, "ebitda": 3_600_000_000, "qoq_pct": -6.02},
         {"period": "2025-Q2", "revenue": 24_900_000_000, "net_income": 2_700_000_000, "gross_profit": 4_900_000_000, "operating_income": 2_300_000_000, "ebitda": 4_100_000_000},
     ],
+    "annual_revenue_growth": [
+        {"year": 2025, "revenue": 97_700_000_000, "net_income": 9_300_000_000, "yoy_pct": 0.95, "ni_yoy_pct": -28.46},
+        {"year": 2024, "revenue": 96_800_000_000, "net_income": 13_000_000_000, "yoy_pct": -0.94, "ni_yoy_pct": 18.18},
+        {"year": 2023, "revenue": 97_700_000_000, "net_income": 11_000_000_000, "yoy_pct": 18.79},
+        {"year": 2022, "revenue": 82_200_000_000, "net_income": 9_100_000_000},
+    ],
+    "dividend_history": [],
+    "dividend_consecutive_years": 0,
+    "pe_history": {},
     "query_time": "2026-05-21T10:00:00",
 }
 
@@ -147,11 +176,31 @@ _NVDA_FUND: dict = {
         "beta": 1.68, "short_ratio": 1.12,
     },
     "quarterly_financials": [
-        {"period": "2026-Q1", "revenue": 26_000_000_000, "net_income": 14_900_000_000, "gross_profit": 19_600_000_000, "operating_income": 16_800_000_000, "ebitda": 17_500_000_000},
-        {"period": "2025-Q4", "revenue": 22_100_000_000, "net_income": 12_300_000_000, "gross_profit": 16_700_000_000, "operating_income": 13_600_000_000, "ebitda": 14_200_000_000},
-        {"period": "2025-Q3", "revenue": 18_100_000_000, "net_income": 9_200_000_000, "gross_profit": 13_500_000_000, "operating_income": 10_400_000_000, "ebitda": 11_000_000_000},
+        {"period": "2026-Q1", "revenue": 26_000_000_000, "net_income": 14_900_000_000, "gross_profit": 19_600_000_000, "operating_income": 16_800_000_000, "ebitda": 17_500_000_000, "qoq_pct": 17.65},
+        {"period": "2025-Q4", "revenue": 22_100_000_000, "net_income": 12_300_000_000, "gross_profit": 16_700_000_000, "operating_income": 13_600_000_000, "ebitda": 14_200_000_000, "qoq_pct": 22.1},
+        {"period": "2025-Q3", "revenue": 18_100_000_000, "net_income": 9_200_000_000, "gross_profit": 13_500_000_000, "operating_income": 10_400_000_000, "ebitda": 11_000_000_000, "qoq_pct": 34.07},
         {"period": "2025-Q2", "revenue": 13_500_000_000, "net_income": 6_200_000_000, "gross_profit": 9_800_000_000, "operating_income": 7_300_000_000, "ebitda": 7_800_000_000},
     ],
+    "annual_revenue_growth": [
+        {"year": 2026, "revenue": 130_000_000_000, "net_income": 73_000_000_000, "yoy_pct": 65.47, "ni_yoy_pct": 64.75},
+        {"year": 2025, "revenue": 78_500_000_000, "net_income": 44_300_000_000, "yoy_pct": 114.2, "ni_yoy_pct": 144.89},
+        {"year": 2024, "revenue": 36_600_000_000, "net_income": 18_100_000_000, "yoy_pct": 125.85},
+        {"year": 2023, "revenue": 16_200_000_000, "net_income": 2_660_000_000},
+    ],
+    "dividend_history": [
+        {"year": 2022, "amount": 0.016},
+        {"year": 2023, "amount": 0.016},
+        {"year": 2024, "amount": 0.034},
+        {"year": 2025, "amount": 0.04},
+        {"year": 2026, "amount": 0.26},
+    ],
+    "dividend_consecutive_years": 15,
+    "pe_history": {
+        "labels": [f"{y}-{m:02d}" for y in range(2021, 2026) for m in range(1, 13)][-42:],
+        "series": [85.0, 92.3, 78.5, 65.2, 45.8, 38.4, 33.1, 30.5, 28.9, 31.4, 33.2, 31.5] * 4,
+        "median": 55.6, "p10": 28.0, "p25": 34.0, "p75": 97.4, "p90": 128.5,
+        "current_pe": 31.52, "current_percentile": 19.0, "samples": 42,
+    },
     "query_time": "2026-05-21T10:00:00",
 }
 

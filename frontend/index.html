@@ -333,6 +333,31 @@
               <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">近期 K 線型態</h2>
               <div id="patterns-list" class="space-y-2"></div>
             </div>
+
+            <!-- B9: Annual revenue YoY -->
+            <div id="annual-growth-card" class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in hidden">
+              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">年度營收成長 (YoY)</h2>
+              <div style="position:relative; height:140px"><canvas id="annual-growth-chart"></canvas></div>
+            </div>
+
+            <!-- B9: Dividend history -->
+            <div id="dividend-history-card" class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in hidden">
+              <div class="flex items-center justify-between mb-3">
+                <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">股利配發歷史</h2>
+                <span id="dividend-consecutive-badge" class="text-xs font-semibold px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hidden">–</span>
+              </div>
+              <div style="position:relative; height:130px"><canvas id="dividend-history-chart"></canvas></div>
+            </div>
+
+            <!-- B9: PE history (river) -->
+            <div id="pe-history-card" class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in hidden">
+              <div class="flex items-center justify-between mb-3">
+                <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">PE 歷史河流圖</h2>
+                <span id="pe-percentile-badge" class="text-xs font-semibold px-2 py-0.5 rounded-md border">–</span>
+              </div>
+              <div style="position:relative; height:140px"><canvas id="pe-history-chart"></canvas></div>
+              <p class="text-[10px] text-slate-600 mt-2">5 年歷史月線 / 以最新 EPS 為錨點推估歷史值，僅供相對估值參考</p>
+            </div>
             <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
               <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-4">市場情緒</h2>
               <div id="sentiment-bars" class="space-y-3"></div>
@@ -399,6 +424,7 @@ let currentTicker = 'AAPL';
 let currentData = null;          // full API response (cached)
 let priceChart = null, volumeChart = null, rsiChart = null, macdChart = null;
 let kdChart = null, obvChart = null;
+let annualGrowthChart = null, dividendHistoryChart = null, peHistoryChart = null;
 let activeOverlays = new Set(['ma5','ma10','ma20','patterns']);
 let sidebarOpen = true;
 
@@ -643,6 +669,9 @@ function renderDashboard(d) {
   renderOBV(d.kline, d.indicators);
   renderMAAlignment(d.indicators);
   renderPatterns(d.patterns);
+  renderAnnualGrowth(d.fundamentals);
+  renderDividendHistory(d.fundamentals);
+  renderPeHistory(d.fundamentals);
   renderValuation(d.fundamentals);
   renderProfitability(d.fundamentals);
   renderDividend(d.fundamentals);
@@ -1060,6 +1089,113 @@ function renderMAAlignment(indicators) {
   el.style.borderColor = a.color;
   el.style.backgroundColor = (a.color || '#94a3b8') + '15';
   el.classList.remove('hidden');
+}
+
+// ── B9: Annual revenue YoY chart ────────────────────────────────────────────
+function renderAnnualGrowth(fund) {
+  const card = document.getElementById('annual-growth-card');
+  const annual = fund?.annual_revenue_growth || [];
+  if (annualGrowthChart) annualGrowthChart.destroy();
+  if (!annual.length) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  // chronological order
+  const sorted = [...annual].sort((a, b) => a.year - b.year);
+  const labels = sorted.map(r => String(r.year));
+  const yoys = sorted.map(r => r.yoy_pct ?? null);
+  const ctx = document.getElementById('annual-growth-chart').getContext('2d');
+  annualGrowthChart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets: [{
+      data: yoys, label: 'YoY %',
+      backgroundColor: yoys.map(v => v == null ? '#475569' : v >= 0 ? 'rgba(34,197,94,.7)' : 'rgba(239,68,68,.7)'),
+      borderWidth: 0,
+    }]},
+    options: { responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#64748b', font: { size: 10 } }, border: { color: '#334155' } },
+        y: { position: 'right', grid: { color: '#1e293b80' }, ticks: { color: '#64748b', font: { size: 10 }, callback: v => v + '%' }, border: { color: '#334155' } },
+      },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: i => `  YoY: ${i.raw != null ? i.raw.toFixed(2) + '%' : '–'}` }, backgroundColor: '#0f172a', borderColor: '#334155', borderWidth: 1, bodyColor: '#94a3b8', padding: 8 } }
+    }
+  });
+}
+
+// ── B9: Dividend history chart ──────────────────────────────────────────────
+function renderDividendHistory(fund) {
+  const card = document.getElementById('dividend-history-card');
+  const badge = document.getElementById('dividend-consecutive-badge');
+  const history = fund?.dividend_history || [];
+  if (dividendHistoryChart) dividendHistoryChart.destroy();
+  if (!history.length) { card.classList.add('hidden'); badge.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+
+  const years = fund.dividend_consecutive_years || 0;
+  if (years > 0) {
+    badge.textContent = `連續 ${years} 年配息`;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+
+  const labels = history.map(r => String(r.year));
+  const amounts = history.map(r => r.amount);
+  const ctx = document.getElementById('dividend-history-chart').getContext('2d');
+  dividendHistoryChart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets: [{ data: amounts, backgroundColor: 'rgba(16,185,129,.7)', borderWidth: 0 }] },
+    options: { responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#64748b', font: { size: 10 } }, border: { color: '#334155' } },
+        y: { position: 'right', grid: { color: '#1e293b80' }, ticks: { color: '#64748b', font: { size: 10 }, callback: v => '$' + v }, border: { color: '#334155' } },
+      },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: i => `  $${i.raw}` }, backgroundColor: '#0f172a', borderColor: '#334155', borderWidth: 1, bodyColor: '#94a3b8', padding: 8 } }
+    }
+  });
+}
+
+// ── B9: PE history (river) chart ────────────────────────────────────────────
+function renderPeHistory(fund) {
+  const card = document.getElementById('pe-history-card');
+  const badge = document.getElementById('pe-percentile-badge');
+  const peHist = fund?.pe_history || {};
+  if (peHistoryChart) peHistoryChart.destroy();
+  if (!peHist.labels || !peHist.series) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+
+  // Percentile badge color
+  const p = peHist.current_percentile;
+  if (p != null) {
+    const color = p < 30 ? '#22c55e' : p < 70 ? '#f59e0b' : '#ef4444';
+    badge.textContent = `當前 PE ${peHist.current_pe} / 歷史 ${p}%`;
+    badge.style.color = color;
+    badge.style.borderColor = color;
+    badge.style.backgroundColor = color + '20';
+  } else {
+    badge.textContent = '–';
+  }
+
+  const labels = peHist.labels;
+  const series = peHist.series;
+  const median = Array(labels.length).fill(peHist.median);
+  const p25 = Array(labels.length).fill(peHist.p25);
+  const p75 = Array(labels.length).fill(peHist.p75);
+  const ctx = document.getElementById('pe-history-chart').getContext('2d');
+  peHistoryChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: 'P75', data: p75, borderColor: 'rgba(148,163,184,.25)', borderWidth: 1, pointRadius: 0, fill: false, borderDash: [3,3] },
+      { label: 'P25', data: p25, borderColor: 'rgba(148,163,184,.25)', borderWidth: 1, pointRadius: 0, fill: '-1', backgroundColor: 'rgba(148,163,184,.06)', borderDash: [3,3] },
+      { label: 'Median', data: median, borderColor: 'rgba(148,163,184,.5)', borderWidth: 1, pointRadius: 0, fill: false, borderDash: [5,3] },
+      { label: 'PE', data: series, borderColor: '#a78bfa', borderWidth: 1.5, pointRadius: 0, tension: 0.3, spanGaps: true, fill: false },
+    ]},
+    options: { responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
+      scales: {
+        x: { grid: { color: '#1e293b' }, ticks: { color: '#64748b', font: { size: 9 }, maxRotation: 0, callback: (v, i) => i % 12 === 0 ? labels[i] : '' }, border: { color: '#334155' } },
+        y: { position: 'right', grid: { color: '#1e293b80' }, ticks: { color: '#64748b', font: { size: 10 } }, border: { color: '#334155' } },
+      },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: i => `  ${i.dataset.label}: ${i.raw != null ? i.raw.toFixed(1) : '–'}` }, backgroundColor: '#0f172a', borderColor: '#334155', borderWidth: 1, bodyColor: '#94a3b8', padding: 8 } }
+    }
+  });
 }
 
 function renderPatterns(patterns) {
