@@ -47,7 +47,7 @@ def fetch_fundamentals(symbol: str) -> dict:
     }
 
     dividend = {
-        "dividend_yield": _safe_pct(info.get("dividendYield")),
+        "dividend_yield": _safe_round(info.get("dividendYield")),
         "dividend_rate": _safe_round(info.get("dividendRate")),
         "payout_ratio": _safe_pct(info.get("payoutRatio")),
         "ex_dividend_date": _fmt_timestamp(info.get("exDividendDate")),

@@ -359,11 +359,13 @@ def _score_revenue_qoq(fund: dict) -> int:
     for i in range(len(revenues) - 1, 0, -1):
         change_pct = (revenues[i] - revenues[i - 1]) / abs(revenues[i - 1]) * 100 if revenues[i - 1] else 0
         if change_pct > 5:
+            if decline_streak > 0:
+                break  # direction switched — stop counting
             growth_streak += 1
-            decline_streak = 0
         elif change_pct < -5:
+            if growth_streak > 0:
+                break  # direction switched — stop counting
             decline_streak += 1
-            growth_streak = 0
         else:
             break
 
