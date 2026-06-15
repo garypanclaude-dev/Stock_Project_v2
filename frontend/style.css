@@ -1,0 +1,27 @@
+:root { font-family: system-ui, -apple-system, sans-serif; }
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: #1e293b; }
+::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+.fade-in { animation: fadeIn 0.3s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.card-hover { transition: transform .15s, box-shadow .15s; }
+.card-hover:hover { transform: translateY(-2px); box-shadow: 0 4px 20px #0006; }
+#ticker-input { text-transform: uppercase; letter-spacing: .1em; }
+#ticker-input::placeholder { text-transform: none; letter-spacing: normal; }
+.period-btn { transition: all .15s; }
+.period-btn.active { background: #3b82f6; color: white; }
+.indicator-chip { transition: all .15s; cursor: pointer; user-select: none; }
+.indicator-chip.active { border-color: #3b82f6; background: rgba(59,130,246,.15); color: #93c5fd; }
+.fund-label { color: #94a3b8; font-size: 0.75rem; }
+.fund-value { color: #e2e8f0; font-size: 0.875rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.quarter-bar { transition: width .4s ease; }
+
+/* Watchlist sidebar */
+.wl-sidebar { width: 260px; transition: margin-left .25s ease; }
+.wl-sidebar.collapsed { margin-left: -260px; }
+.wl-row { transition: background .1s; }
+.wl-row:hover { background: rgba(51,65,85,.5); }
+.wl-row.active { background: rgba(59,130,246,.12); border-left: 2px solid #3b82f6; }
+.chart-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(15,23,42,.6); border-radius: 1rem; z-index: 10; }
