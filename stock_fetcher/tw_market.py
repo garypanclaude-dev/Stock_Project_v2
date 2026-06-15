@@ -531,7 +531,7 @@ def _fetch_tpex_pe_for_date(target_date: date) -> dict[str, dict]:
 
 # ── Multi-day factor calculation ──────────────────────────────────────────────
 
-def _compute_multi_day_factors(symbol: str) -> dict:
+def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None) -> dict:
     """
     Compute factors that require historical data:
       - momentum_5d, momentum_20d
@@ -540,9 +540,14 @@ def _compute_multi_day_factors(symbol: str) -> dict:
       - volatility_20d (std of change_pct)
       - kd (latest K value → absolute score)
       - obv (5-day trend vs price slope → absolute score)
+
+    If *history* is provided (newest-first list[dict]), it is used directly
+    instead of querying the DB.  The backtester uses this to feed pre-loaded
+    in-memory data, avoiding per-stock DB round-trips.
     """
-    # Extended to 65 days to support MA60 + KD warm-up.
-    history = tw_db.get_history(symbol, days=65)
+    if history is None:
+        # Extended to 65 days to support MA60 + KD warm-up.
+        history = tw_db.get_history(symbol, days=65)
     if len(history) < 2:
         return {}
 
@@ -690,7 +695,20 @@ def _lookup_factor_score(value: float, table: list[tuple], default: int) -> int:
 
 # ── Multi-factor ranking ──────────────────────────────────────────────────────
 
-def _rank_stocks_with_history(snapshot: list[dict]) -> list[dict]:
+def _rank_stocks_with_history(
+    snapshot: list[dict],
+    *,
+    histories: dict[str, list[dict]] | None = None,
+    result_limit: int | None = None,
+) -> list[dict]:
+    """Rank stocks by 13-factor composite score.
+
+    Parameters
+    ----------
+    histories : optional dict mapping symbol → newest-first price list.
+        When provided, used instead of per-stock DB queries (backtester path).
+    result_limit : optional int to override SCREENER_CONFIG["top_n"].
+    """
     min_vol = SCREENER_CONFIG["min_volume"]
     eligible = [s for s in snapshot if s.get("volume", 0) >= min_vol]
     if not eligible:
@@ -698,7 +716,11 @@ def _rank_stocks_with_history(snapshot: list[dict]) -> list[dict]:
 
     # Enrich each stock with multi-day factors
     for s in eligible:
-        s.update(_compute_multi_day_factors(s["symbol"]))
+        sym = s["symbol"]
+        if histories and sym in histories:
+            s.update(_compute_multi_day_factors(sym, history=histories[sym]))
+        else:
+            s.update(_compute_multi_day_factors(sym))
 
     w = SCREENER_CONFIG["weights"]
 
@@ -739,8 +761,9 @@ def _rank_stocks_with_history(snapshot: list[dict]) -> list[dict]:
 
     eligible.sort(key=lambda s: s["score"], reverse=True)
 
+    limit = result_limit or SCREENER_CONFIG["top_n"]
     result = []
-    for rank, s in enumerate(eligible[:SCREENER_CONFIG["top_n"]], 1):
+    for rank, s in enumerate(eligible[:limit], 1):
         result.append({
             "rank": rank,
             "symbol": s["symbol"],
@@ -768,6 +791,27 @@ def _rank_stocks_with_history(snapshot: list[dict]) -> list[dict]:
             },
         })
     return result
+
+
+def run_screener_with_data(
+    snapshot: list[dict],
+    histories: dict[str, list[dict]],
+    top_n: int | None = None,
+) -> list[dict]:
+    """Run screener ranking with pre-loaded data.
+
+    Public interface for the backtester — avoids DB queries by accepting
+    pre-built snapshot and histories dicts.
+
+    Parameters
+    ----------
+    snapshot : list of stock dicts (OHLCV + company info) for a specific date.
+    histories : {symbol: newest-first price list} for factor computation.
+    top_n : override default result limit (SCREENER_CONFIG["top_n"]).
+    """
+    return _rank_stocks_with_history(
+        snapshot, histories=histories, result_limit=top_n,
+    )
 
 
 def _assign_percentile(stocks: list[dict], field: str, rank_field: str, reverse: bool = False):

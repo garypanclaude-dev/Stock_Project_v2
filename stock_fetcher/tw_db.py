@@ -283,6 +283,81 @@ def prune_older_than(cutoff_date: str) -> int:
     return cursor.rowcount
 
 
+# ── Backtest support queries ─────────────────────────────────────────────────
+
+def get_trading_dates() -> list[str]:
+    """Return all distinct trading dates in DB, sorted ascending."""
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT date FROM daily_prices ORDER BY date"
+        ).fetchall()
+    return [r["date"] for r in rows]
+
+
+def get_history_before(symbol: str, before_date: str, days: int = 65) -> list[dict]:
+    """Return up to *days* of price history ending at *before_date*, newest first.
+
+    Same contract as get_history() but with an explicit date ceiling.
+    """
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT date, open, high, low, close, change_pct, volume, pe, pb, yield_pct
+            FROM daily_prices
+            WHERE symbol = ? AND date <= ?
+            ORDER BY date DESC
+            LIMIT ?
+        """, (symbol, before_date, days)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_snapshot_at_date(target_date: str) -> list[dict]:
+    """Return all stocks with price data on a specific date + company info.
+
+    Like get_latest_snapshot() but for a historical date.
+    """
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT
+                c.symbol, c.name, c.industry, c.market,
+                d.date, d.open, d.high, d.low, d.close, d.change_pct, d.volume,
+                d.pe, d.pb, d.yield_pct
+            FROM companies c
+            JOIN daily_prices d ON c.symbol = d.symbol
+            WHERE d.date = ?
+        """, (target_date,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_daily_prices() -> list[dict]:
+    """Return ALL daily price records, ordered by symbol then date.
+
+    Used by the backtester for bulk loading into memory.
+    Warning: may return hundreds of thousands of rows.
+    """
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT symbol, date, open, high, low, close, change_pct, volume,
+                   pe, pb, yield_pct
+            FROM daily_prices
+            ORDER BY symbol, date
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_companies() -> dict[str, dict]:
+    """Return all companies as {symbol: {name, industry, market}}."""
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT symbol, name, industry, market FROM companies"
+        ).fetchall()
+    return {r["symbol"]: dict(r) for r in rows}
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def list_trading_days(start: date, end: date) -> list[date]:

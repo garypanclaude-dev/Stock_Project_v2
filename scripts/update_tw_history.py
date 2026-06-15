@@ -72,11 +72,11 @@ def _determine_dates(args) -> list[date]:
         return sorted(days)
 
     if args.full_check:
-        # Last 60 trading days, fill any missing
+        # Last 250 trading days (~1 year), fill any missing
         end = today
         days = []
         d = end
-        while len(days) < 60:
+        while len(days) < 250:
             if d.weekday() < 5:
                 days.append(d)
             d -= timedelta(days=1)
@@ -91,11 +91,11 @@ def _determine_dates(args) -> list[date]:
     # Default: incremental from latest DB date + 1 to today
     latest = tw_db.get_latest_date()
     if latest is None:
-        # DB is empty — bootstrap with 60 days
-        logger.info("DB is empty. Bootstrapping with last 60 trading days.")
+        # DB is empty — bootstrap with 250 days (~1 year)
+        logger.info("DB is empty. Bootstrapping with last 250 trading days.")
         days = []
         d = today
-        while len(days) < 60:
+        while len(days) < 250:
             if d.weekday() < 5:
                 days.append(d)
             d -= timedelta(days=1)

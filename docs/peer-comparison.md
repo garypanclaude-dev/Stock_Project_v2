@@ -1,11 +1,12 @@
 # P1-5 同業比較、自選股比較、潛力股篩選
 
-> 版本：3.6
+> 版本：4.0
 > 最後更新：2026-06-11
 > v3.3：潛力股篩選 B7 整合 — 8 → 10 因子，新增 KD、OBV；ma_trend 升級為 4 態（含糾結判定）
 > v3.4：潛力股篩選 B8 整合 — 10 → 11 因子，新增 K 線型態因子
 > v3.5：潛力股篩選 B9 整合 — 11 → 13 因子，新增殖利率穩定度 + PE 60 日歷史分位
 > v3.6：修正對照表 — 綜合評分技術面更新為 6 指標（含 KD/OBV）、量能欄位更正
+> v4.0：新增歷史回測功能 — Top 5 模擬投資組合、停利停損出場機制、權益曲線；DB 擴充至 250 個交易日
 
 ## 概述
 
@@ -14,6 +15,7 @@
 1. **同業比較**：查看個股時自動帶出同產業競爭對手，橫向比較指標 + 相對走勢圖（含大盤）
 2. **自選股比較**：Watchlist 內所有股票 + 大盤指數放在同一張圖比較
 3. **潛力股篩選**：從全台灣上市櫃 ~1,970 支股票中，用 13 因子百分位排名選出 Top 20
+4. **歷史回測**：以過去 1 年資料模擬篩選器的實際操作績效（Top 5 投資組合 + 停利停損）
 
 ---
 
@@ -21,11 +23,21 @@
 
 本專案中有四個地方涉及「評分」或「比較」，各自的設計目的、評分方式、資料來源不同：
 
+### 功能定位
+
+| | 潛力股篩選 | 綜合投資評分 |
+|---|---|---|
+| **角色** | **選股池** — 從全市場篩選短線/波段候選標的 | **個股評估** — 深入分析特定股票是否適合進場 |
+| **操作流程** | 先用篩選器從 ~1,970 支中找出 Top 20 | 再對感興趣的個股做綜合評分，決定是否交易 |
+| **時間定位** | 短線至波段（1-20 日） | 短線至波段（依技術面訊號進出） |
+
+> **使用順序**：篩選器 → 找到候選 → 綜合評分 → 決定是否進場
+
 ### 對照表
 
 | | 綜合投資評分 | 同業比較 | 自選股比較 | 潛力股篩選 |
 |---|---|---|---|---|
-| **解決什麼問題** | 這支股票值得買嗎？ | 跟同產業比是強是弱？ | 我的持股哪支最好？ | 全市場哪支最值得關注？ |
+| **解決什麼問題** | 這支股票現在適合進場嗎？ | 跟同產業比是強是弱？ | 我的持股哪支最好？ | 全市場哪支最值得關注？ |
 | **比較對象** | 單一股票 vs 絕對標準 | 同產業 3-4 支 | Watchlist 全部 | 全台 ~1,970 支 |
 | **評分方式** | 絕對閾值（P/E<15=75 分） | 簡化基本面分數 | 簡化基本面分數 | 相對百分位排名 |
 | **技術面** | ✅ RSI, MACD, 均線, 布林, KD, OBV | ❌ | ❌ | ✅ 5d/20d 動能, MA 多頭排列, KD, OBV |
@@ -33,7 +45,7 @@
 | **量能** | ✅ OBV（量價背離/齊揚） | ❌ | ❌ | ✅ 量能比（今/20d 均量）+ OBV |
 | **風險** | ✅ Beta | ✅ Beta | ✅ Beta | ✅ 20 日波動率 |
 | **AI 情緒** | ✅ Gemini 分析 | ❌ | ❌ | ❌ |
-| **資料來源** | yfinance + Gemini | yfinance | yfinance | **SQLite（60 天 TWSE/TPEX 歷史）** |
+| **資料來源** | yfinance + Gemini | yfinance | yfinance | **SQLite（250 個交易日 TWSE/TPEX 歷史）** |
 | **規格文件** | `docs/composite-score.md` | 本文件 | 本文件 | 本文件 |
 
 ### 為什麼不統一？
@@ -187,8 +199,8 @@ Response: （格式同同業比較）
 data/tw_market.db
 ├── companies         (1,979 筆：TWSE 1,090 + TPEX 889)
 │   └── symbol, name, industry, market, updated_at
-└── daily_prices      (~110,000 筆，60 個交易日 × ~1,970 支)
-    └── symbol, date, close, change_pct, volume, pe, pb, yield_pct
+└── daily_prices      (~490,000 筆，250 個交易日 × ~1,970 支)
+    └── symbol, date, open, high, low, close, change_pct, volume, pe, pb, yield_pct
 ```
 
 **為什麼換成 SQLite？**
@@ -330,11 +342,11 @@ PE_PERCENTILE_LOOKBACK = 60     # 樣本視窗
 |---|---|---|
 | **評分方式** | 絕對閾值 | 百分位排名 |
 | **例子** | P/E < 15 → 75 分（不管別人） | P/E 排名前 20% → 80 分（跟全市場比） |
-| **技術面** | RSI, MACD, 均線, 布林 | 5d/20d 動能, MA 多頭排列 |
+| **技術面** | RSI, MACD, 均線, 布林, KD, OBV | 5d/20d 動能, MA 多頭排列, KD, OBV |
 | **基本面** | P/E, ROE, 營收趨勢, Margin, 殖利率 | P/E, P/B, 殖利率 |
-| **量能** | 無 | 量能比（今/20d 均量） |
+| **量能** | OBV | 量能比（今/20d 均量）+ OBV |
 | **AI 情緒** | ✅ 佔 25% | ❌ 不包含 |
-| **適用場景** | 深入分析單一股票 | 快速掃描全市場 |
+| **適用場景** | 評估個股是否適合進場交易 | 從全市場篩選短線/波段候選標的 |
 
 ### API
 
@@ -357,17 +369,19 @@ Response:
       "yield_pct": 3.2,
       "volume": 12345,
       "factors": {
-        "momentum_5d":  93,
-        "momentum_20d": 76,
-        "value":        65,
-        "pb_value":     58,
-        "quality":      72,
-        "volume_ratio": 99,
-        "ma_trend":     100,
-        "low_vol":      55,
-        "kd":           46,
-        "obv":          96,
-        "pattern":      85
+        "momentum_5d":      93,
+        "momentum_20d":     76,
+        "value":            65,
+        "pb_value":         58,
+        "quality":          72,
+        "volume_ratio":     99,
+        "ma_trend":         100,
+        "low_vol":          55,
+        "kd":               46,
+        "obv":              96,
+        "pattern":          85,
+        "yield_stability":  71,
+        "pe_percentile":    63
       }
     },
     ...
@@ -383,6 +397,149 @@ Response:
 
 ---
 
+## 功能 D：歷史回測（v4.0 新增）
+
+### 目的
+
+驗證篩選器的實際選股效果：**如果過去一年每天都照 Top 5 操作，到底賺不賺錢？**
+
+與 B2（事件回顧）不同：B2 是「特定事件後股價怎麼走」，歷史回測是「篩選器整體策略的績效驗證」。
+
+### 模擬邏輯
+
+```
+每個交易日 D（有持倉 slot 空出時）：
+  1. 用「截至 D 日」的歷史資料跑 13 因子篩選器 → 取 Top 5
+  2. D+1 以開盤價買入（等權重分配）
+  3. 每支持股獨立判定出場：
+     a. 停利：當日 High ≥ 買入價 × 1.03 → 以買入價 × 1.03 結算
+     b. 停損：當日 Low  ≤ 買入價 × 0.95 → 以買入價 × 0.95 結算
+     c. 同日觸發兩者 → 停損優先（保守假設）
+     d. 持有滿 5 日 → 以第 5 日收盤價強制出場
+  4. 空出的 slot → 用最新篩選結果補位（排除仍在持倉的股票）
+  5. 追蹤每日組合淨值 + 對照基準（0050.TW buy-and-hold）
+```
+
+### 出場參數
+
+| 參數 | 值 | 設計理由 |
+|------|-----|---------|
+| 停利 | +3% | 短線操作，落袋為安 |
+| 停損 | -5% | 給足夠空間避免被日內波動震出，風報比 1:1.67 |
+| 最長持有 | 5 交易日 | 與篩選器短線定位一致 |
+| 持倉數 | 5 | 集中持股提高精準度，Top 5 品質較 Top 20 更高 |
+| 基準 | 0050.TW | 台股大盤 ETF，同期 buy-and-hold |
+
+> 所有參數可在 `stock_fetcher/backtest_config.py` 調整。
+
+### 避免前視偏差（Look-Ahead Bias）
+
+回測的最大風險是不小心用到「未來資料」，導致績效虛高。本系統的防範：
+
+| 項目 | 做法 |
+|------|------|
+| 篩選時間點 | 呼叫 `get_history_before(symbol, target_date, days=65)` 取「截至 target_date」的資料，絕不使用之後的資料 |
+| 買入時間點 | 篩選日 D 選出 Top 5，D+1 開盤價買入（非 D 日收盤價） |
+| 出場判定 | 用 D+1 起的 OHLC 判定，不使用篩選當天的價格 |
+
+### 輸出格式
+
+#### 1. 交易明細表（trades）
+
+| 欄位 | 說明 |
+|------|------|
+| entry_date | 買入日期 |
+| exit_date | 賣出日期 |
+| symbol | 股票代號 |
+| name | 股票名稱 |
+| entry_price | 買入價（開盤價） |
+| exit_price | 賣出價 |
+| return_pct | 報酬率 (%) |
+| exit_reason | `take_profit` / `stop_loss` / `max_hold` |
+| hold_days | 持有天數 |
+
+#### 2. 統計摘要（summary）
+
+| 指標 | 說明 |
+|------|------|
+| total_return | 總報酬率 (%) |
+| annualized_return | 年化報酬率 (%) |
+| benchmark_return | 同期 0050.TW 報酬率 (%) |
+| total_trades | 總交易次數 |
+| win_rate | 勝率 (%) |
+| avg_win | 平均獲利 (%) |
+| avg_loss | 平均虧損 (%) |
+| profit_factor | 獲利因子（總獲利 / 總虧損） |
+| max_drawdown | 最大回撤 (%) |
+| sharpe_ratio | Sharpe Ratio（年化，假設無風險利率 1.5%） |
+| avg_hold_days | 平均持有天數 |
+
+#### 3. 權益曲線（daily_equity）
+
+每日一筆：`{date, equity, benchmark}`
+
+- equity：組合淨值（起始 = 1,000,000）
+- benchmark：0050.TW 同起始日 buy-and-hold 淨值
+- 用 Chart.js 繪製雙線圖
+
+### API
+
+```
+GET /api/stock-screener/backtest?mock=true
+
+Response:
+{
+  "period": {"start": "2025-07-01", "end": "2026-06-09"},
+  "config": {
+    "top_n": 5,
+    "take_profit": 0.03,
+    "stop_loss": -0.05,
+    "max_hold_days": 5,
+    "initial_capital": 1000000
+  },
+  "summary": {
+    "total_return": 12.35,
+    "annualized_return": 12.85,
+    "benchmark_return": 8.21,
+    "total_trades": 186,
+    "win_rate": 58.6,
+    "avg_win": 2.87,
+    "avg_loss": -3.42,
+    "profit_factor": 1.45,
+    "max_drawdown": -8.72,
+    "sharpe_ratio": 1.23,
+    "avg_hold_days": 3.1
+  },
+  "daily_equity": [
+    {"date": "2025-07-01", "equity": 1000000, "benchmark": 1000000},
+    ...
+  ],
+  "trades": [
+    {
+      "entry_date": "2025-07-02",
+      "exit_date": "2025-07-04",
+      "symbol": "2330.TW",
+      "name": "台積電",
+      "entry_price": 985.0,
+      "exit_price": 1014.55,
+      "return_pct": 3.0,
+      "exit_reason": "take_profit",
+      "hold_days": 2
+    },
+    ...
+  ]
+}
+```
+
+### 限制與注意事項
+
+1. **交易成本未計入**：未扣手續費（買 0.1425%）、證交稅（賣 0.3%）。實際報酬約需再扣 0.4-0.5% / 每筆。
+2. **流動性假設**：假設 Top 5 都能以開盤價成交，實際可能有滑價。已用前置篩選（日均量 ≥ 500 張）降低此風險。
+3. **生存者偏差**：DB 只有目前仍在交易的股票，已下市股票不在回測範圍。
+4. **同日停利停損**：以停損優先是保守假設，實際走勢可能先觸停利再跌破停損，或反之。日線層級無法區分日內先後順序。
+
+---
+
 ## 資料管理（v3.0 新增）
 
 ### 工具：`scripts/update_tw_history.py`
@@ -394,8 +551,8 @@ CLI 工具，負責維護 SQLite 中的 TW 市場歷史資料。
 | 模式 | 指令 | 用途 |
 |------|------|------|
 | **預設增量** | `python scripts/update_tw_history.py` | 找 DB 最新日期 → 抓到今天，跳過已存在的 |
-| **完整檢查** | `python scripts/update_tw_history.py --full-check` | 比對最近 60 天的交易日，補齊任何位置的漏洞 |
-| **首次建構** | `python scripts/update_tw_history.py --backfill 60` | 回填最近 60 個交易日（DB 空時自動觸發） |
+| **完整檢查** | `python scripts/update_tw_history.py --full-check` | 比對最近 250 天的交易日，補齊任何位置的漏洞 |
+| **首次建構** | `python scripts/update_tw_history.py --backfill 250` | 回填最近 250 個交易日（DB 空時自動觸發） |
 | **單一日期** | `python scripts/update_tw_history.py --date 2026-06-03` | 補抓特定日期 |
 | **日期範圍** | `python scripts/update_tw_history.py --from 2026-05-01 --to 2026-05-31` | 補抓指定範圍 |
 | **預覽模式** | `python scripts/update_tw_history.py --dry-run` | 顯示會抓哪些日期，不實際執行 |
@@ -412,7 +569,7 @@ CLI 工具，負責維護 SQLite 中的 TW 市場歷史資料。
 
 | 場景 | API 呼叫次數 | 預估時間（含 0.5s 延遲） |
 |------|-----------|----------------------|
-| 首次建構（60 天） | 60 × 4 API + 2 公司分類 | 約 4-5 分鐘 |
+| 首次建構（250 天） | 250 × 4 API + 2 公司分類 | 約 15-20 分鐘 |
 | 日常增量（1 天） | 4 次 | < 5 秒 |
 | 補一週漏洞（5 天） | 20 次 | 約 15 秒 |
 | 完整檢查（無漏洞） | 0 次（只查 DB） | < 1 秒 |
@@ -430,8 +587,9 @@ CLI 工具，負責維護 SQLite 中的 TW 市場歷史資料。
 
 ### 資料生命週期
 
-- **保留期間**：最近 60 個交易日（約 3 個月）
-- **未來擴展**：可用 `tw_db.prune_older_than()` 清理舊資料
+- **保留期間**：最近 250 個交易日（約 1 年）
+- 需要 1 年歷史以支援回測功能（歷史篩選 + 模擬交易）
+- **清理工具**：可用 `tw_db.prune_older_than()` 手動清理舊資料
 
 ---
 

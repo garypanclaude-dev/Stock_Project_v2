@@ -503,3 +503,97 @@ def get_mock_screener() -> dict:
         "total_stocks": 2487,
         "top_picks": _MOCK_SCREENER_STOCKS,
     }
+
+
+def get_mock_backtest() -> dict:
+    """Mock forward-return backtest results for frontend development."""
+    from statistics import median as _median
+    random.seed(42)
+
+    forward_days = [1, 3, 5, 10, 20]
+    mock_stocks = [
+        ("2330.TW", "台積電"), ("2454.TW", "聯發科"), ("2317.TW", "鴻海"),
+        ("2382.TW", "廣達"), ("3008.TW", "大立光"), ("2881.TW", "富邦金"),
+        ("2303.TW", "聯電"), ("2412.TW", "中華電"), ("1301.TW", "台塑"),
+        ("2886.TW", "兆豐金"), ("2891.TW", "中信金"), ("3711.TW", "日月投"),
+        ("2002.TW", "中鋼"), ("1216.TW", "統一"), ("2884.TW", "玉山金"),
+        ("5871.TW", "中租-KY"), ("2357.TW", "華碩"), ("4904.TW", "遠傳"),
+        ("2327.TW", "國巨"), ("6669.TW", "緯穎"),
+    ]
+
+    signals = []
+    base = date(2025, 7, 15)
+    for i in range(60):
+        signal_date = (base + timedelta(days=i * 7 // 5)).isoformat()
+        buy_date = (base + timedelta(days=i * 7 // 5 + 1)).isoformat()
+
+        day_stocks = random.sample(mock_stocks, 20)
+        for rank, (sym, name) in enumerate(day_stocks, 1):
+            score = round(random.uniform(50, 85) - (rank - 1) * 1.2, 1)
+            entry_price = round(random.uniform(30, 900), 2)
+
+            returns = {}
+            benchmark_returns = {}
+            for n in forward_days:
+                rank_bonus = (21 - rank) * 0.015
+                ret = round(random.gauss(0.08 + rank_bonus, 1.2 * (n ** 0.5)), 2)
+                bench = round(random.gauss(0.04, 0.7 * (n ** 0.5)), 2)
+                returns[n] = ret
+                benchmark_returns[n] = bench
+
+            signals.append({
+                "signal_date": signal_date,
+                "buy_date": buy_date,
+                "symbol": sym,
+                "name": name,
+                "rank": rank,
+                "score": score,
+                "entry_price": entry_price,
+                "returns": returns,
+                "benchmark_returns": benchmark_returns,
+            })
+
+    def _horizon_stats(sigs, n):
+        rets = [s["returns"][n] for s in sigs if n in s["returns"]]
+        bench = [s["benchmark_returns"][n] for s in sigs if n in s["benchmark_returns"]]
+        if not rets:
+            return {"count": 0, "avg_return": 0, "median_return": 0,
+                    "win_rate": 0, "avg_benchmark": 0, "avg_excess": 0}
+        avg_r = sum(rets) / len(rets)
+        avg_b = sum(bench) / len(bench) if bench else 0
+        return {
+            "count": len(rets),
+            "avg_return": round(avg_r, 2),
+            "median_return": round(_median(rets), 2),
+            "win_rate": round(sum(1 for r in rets if r > 0) / len(rets) * 100, 1),
+            "avg_benchmark": round(avg_b, 2),
+            "avg_excess": round(avg_r - avg_b, 2),
+        }
+
+    by_horizon = {str(n): _horizon_stats(signals, n) for n in forward_days}
+
+    rank_groups = [(1, 5), (6, 10), (11, 15), (16, 20)]
+    by_rank_group = {}
+    for lo, hi in rank_groups:
+        group = [s for s in signals if lo <= s["rank"] <= hi]
+        by_rank_group[f"{lo}-{hi}"] = {
+            str(n): _horizon_stats(group, n) for n in forward_days
+        }
+
+    return {
+        "period": {
+            "start": "2025-07-15",
+            "end": "2026-06-09",
+            "trading_days": 150,
+        },
+        "config": {
+            "top_n": 20,
+            "forward_days": forward_days,
+        },
+        "summary": {
+            "total_signals": len(signals),
+            "by_horizon": by_horizon,
+            "by_rank_group": by_rank_group,
+        },
+        "signals": signals,
+    }

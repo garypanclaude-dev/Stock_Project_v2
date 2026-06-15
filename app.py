@@ -30,6 +30,7 @@ if not logging.getLogger().handlers:
 from mock_data import (
     get_mock_response, get_mock_batch_quotes, get_mock_chart_data,
     get_mock_peer_comparison, get_mock_watchlist_comparison, get_mock_screener,
+    get_mock_backtest,
 )
 
 logger = logging.getLogger(__name__)
@@ -260,6 +261,27 @@ async def get_stock_screener(mock: bool = Query(True)) -> dict:
     except Exception as exc:
         logger.exception("Stock screener error")
         raise HTTPException(status_code=502, detail="Service temporarily unavailable") from exc
+
+
+# ── Stock screener backtest ────────────────────────────────────────────────────
+@app.get("/api/stock-screener/backtest")
+async def get_stock_screener_backtest(mock: bool = Query(True)) -> dict:
+    if mock:
+        return get_mock_backtest()
+
+    try:
+        from stock_fetcher.backtester import run_backtest
+        result = await asyncio.to_thread(run_backtest)
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Backtest error")
+        raise HTTPException(
+            status_code=502, detail="Backtest service temporarily unavailable"
+        ) from exc
 
 
 # ── Chart only (for period switching — no news/gemini/fundamentals) ────────────
