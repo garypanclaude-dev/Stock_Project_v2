@@ -5,13 +5,6 @@ Centralised here so tuning doesn't require touching business logic.
 
 # ── Dimension weights ─────────────────────────────────────────────────────────
 DIMENSION_WEIGHTS = {
-    "technical": 0.40,
-    "fundamental": 0.35,
-    "sentiment": 0.25,
-}
-
-# Used when sentiment is unavailable (AI failure)
-FALLBACK_WEIGHTS = {
     "technical": 0.55,
     "fundamental": 0.45,
 }
@@ -219,33 +212,3 @@ PE_PERCENTILE_BONUS = [
     (101, -15),  # PE 在歷史 80-100 分位 → 歷史最貴 -15
 ]
 
-# ── Sentiment sub-indicator weights ───────────────────────────────────────────
-SENT_WEIGHTS = {
-    "bull_bear_ratio": 0.60,
-    "catalyst_count": 0.20,
-    "catalyst_impact": 0.20,
-}
-
-# Catalyst count → score
-CATALYST_COUNT_SCORES = {
-    0: 50,
-    1: 60,
-    2: 60,
-    3: 70,
-    4: 70,
-    5: 70,
-}
-CATALYST_COUNT_DEFAULT = 65  # > 5
-
-# Catalyst type impact weights (higher = more market-moving)
-CATALYST_IMPACT = {
-    "earnings":       1.0,
-    "regulation":     0.9,
-    "m_and_a":        0.85,
-    "analyst_rating": 0.8,
-    "management":     0.7,
-    "litigation":     0.7,
-    "product_launch": 0.6,
-    "macro":          0.5,
-}
-CATALYST_IMPACT_DEFAULT = 0.5

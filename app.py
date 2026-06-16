@@ -112,21 +112,18 @@ async def get_stock_insights(
     if mock:
         return get_mock_response(ticker, period)
 
-    # ── Step 1: fetch price, news, fundamentals in parallel ─────────────
+    # ── Step 1: fetch price + fundamentals in parallel ──────────────────
     from stock_fetcher import (
-        analyze_news, fetch_stock_news, fetch_stock_price, fetch_fundamentals,
+        fetch_stock_price, fetch_fundamentals,
         compute_composite_score, compute_risk_metrics, detect_patterns,
         generate_commentary,
     )
 
     try:
         price_task = asyncio.to_thread(fetch_stock_price, ticker, period)
-        news_task = asyncio.to_thread(fetch_stock_news, ticker)
         fund_task = asyncio.to_thread(fetch_fundamentals, ticker)
 
-        price_data, news_data, fundamentals = await asyncio.gather(
-            price_task, news_task, fund_task
-        )
+        price_data, fundamentals = await asyncio.gather(price_task, fund_task)
     except EnvironmentError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except ValueError as exc:
@@ -135,38 +132,21 @@ async def get_stock_insights(
         logger.exception("Upstream error for %s", ticker)
         raise HTTPException(status_code=502, detail="Service temporarily unavailable") from exc
 
-    # ── Step 2: AI analysis — graceful degradation if it fails ────────
-    catalysts: list[dict] = []
-    ai_error: str | None = None
-    try:
-        catalysts = await asyncio.to_thread(analyze_news, news_data)
-    except Exception as exc:
-        logger.warning("AI analysis failed for %s: %s", ticker, exc)
-        ai_error = "AI 分析暫時不可用（可能為 API 配額已達上限），其餘數據正常顯示。"
-
-    bullish = sum(1 for c in catalysts if c.get("sentiment") == "Bullish")
-    bearish = sum(1 for c in catalysts if c.get("sentiment") == "Bearish")
-    neutral = sum(1 for c in catalysts if c.get("sentiment") == "Neutral")
-
-    sentiment_summary = {"bullish": bullish, "bearish": bearish, "neutral": neutral, "total": len(catalysts)}
-
-    # ── Step 3: detect candlestick patterns (pure calculation) ───────
+    # ── Step 2: detect candlestick patterns (pure calculation) ───────
     patterns = detect_patterns(price_data["kline"])
 
-    # ── Step 3a: compute composite score (pure calculation, no I/O) ──
+    # ── Step 2a: compute composite score (pure calculation, no I/O) ──
     score = compute_composite_score(
         indicators=price_data["indicators"],
         fundamentals=fundamentals,
-        sentiment_summary=sentiment_summary if not ai_error else None,
-        catalysts=catalysts if not ai_error else None,
         kline=price_data["kline"],
         patterns=patterns,
     )
 
-    # ── Step 3b: compute risk metrics (HV, MDD, ATR, stop-loss) ──────
+    # ── Step 2b: compute risk metrics (HV, MDD, ATR, stop-loss) ──────
     risk = compute_risk_metrics(price_data["kline"], price_data["indicators"], patterns)
 
-    # ── Step 4: AI commentary — graceful degradation ─────────────────
+    # ── Step 3: AI commentary — graceful degradation ─────────────────
     commentary = None
     try:
         commentary = await asyncio.to_thread(
@@ -179,13 +159,10 @@ async def get_stock_insights(
         "symbol": ticker,
         "period": period,
         "is_mock": False,
-        "ai_error": ai_error,
         "latest_quote": price_data["latest_quote"],
         "kline": price_data["kline"],
         "indicators": price_data["indicators"],
         "fundamentals": fundamentals,
-        "catalysts": catalysts,
-        "sentiment_summary": sentiment_summary,
         "score": score,
         "risk": risk,
         "patterns": patterns,
@@ -284,7 +261,7 @@ async def get_stock_screener_backtest(mock: bool = Query(True)) -> dict:
         ) from exc
 
 
-# ── Chart only (for period switching — no news/gemini/fundamentals) ────────────
+# ── Chart only (for period switching — no fundamentals) ──────────────────────
 @app.get("/api/stock-chart")
 async def get_stock_chart(
     ticker: str = Query(..., min_length=1, max_length=10),

@@ -1,10 +1,4 @@
 // ── Config ──────────────────────────────────────────────────────────────────
-const SENTIMENT = {
-  Bullish: { label: '↑ Bullish', border: '#22c55e', bg: 'rgba(34,197,94,.15)', text: 'text-green-400', badge: 'bg-green-500/20 text-green-400 border-green-500/30', bar: '#22c55e' },
-  Bearish: { label: '↓ Bearish', border: '#ef4444', bg: 'rgba(239,68,68,.15)', text: 'text-red-400', badge: 'bg-red-500/20 text-red-400 border-red-500/30', bar: '#ef4444' },
-  Neutral: { label: '→ Neutral', border: '#f59e0b', bg: 'rgba(245,158,11,.1)', text: 'text-amber-400', badge: 'bg-amber-500/20 text-amber-400 border-amber-500/30', bar: '#f59e0b' },
-};
-const CATALYST_ICON = { earnings:'📊', analyst_rating:'📈', regulation:'⚖️', product_launch:'🚀', m_and_a:'🤝', management:'👔', litigation:'⚠️', macro:'🌍' };
 const MA_COLORS = { ma5: '#f59e0b', ma10: '#3b82f6', ma20: '#a855f7', ma60: '#ec4899' };
 const BB_COLOR = '#06b6d4';
 
@@ -147,7 +141,7 @@ document.getElementById('period-btns').addEventListener('click', async (e) => {
     if (!res.ok) throw new Error('Failed');
     const data = await res.json();
 
-    // Only update chart data — fundamentals/catalysts/sentiment untouched
+    // Only update chart data — fundamentals untouched
     currentData.kline = data.kline;
     currentData.indicators = data.indicators;
     currentData.period = data.period;
@@ -272,10 +266,6 @@ function renderDashboard(d) {
   renderProfitability(d.fundamentals);
   renderDividend(d.fundamentals);
   renderQuarterly(d.fundamentals);
-  renderSentiment(d.sentiment_summary);
-  renderAiError(d.ai_error);
-  renderCatalysts(d.catalysts);
-  document.getElementById('catalyst-count').textContent = `${d.sentiment_summary.total} 則`;
 
   // Load comparison data (non-blocking)
   loadPeerComparison();
@@ -320,17 +310,15 @@ function renderScore(score, commentary) {
   const subs = [
     { label: '技術面', score: score.technical?.score ?? 0, weight: score.weights_used?.technical ?? 0 },
     { label: '基本面', score: score.fundamental?.score ?? 0, weight: score.weights_used?.fundamental ?? 0 },
-    { label: '情緒面', score: score.sentiment?.score ?? 0, weight: score.weights_used?.sentiment ?? 0, available: score.sentiment?.available },
   ];
   document.getElementById('sub-scores').innerHTML = subs.map(s => {
     const pct = s.score;
     const barColor = pct >= 61 ? '#22c55e' : pct >= 41 ? '#f59e0b' : '#ef4444';
     const weightPct = Math.round((s.weight || 0) * 100);
-    const unavail = s.available === false ? ' <span class="text-slate-600">(不可用)</span>' : '';
     return `
       <div>
         <div class="flex justify-between items-center mb-1">
-          <span class="text-xs text-slate-400">${s.label} <span class="text-slate-600">${weightPct}%</span>${unavail}</span>
+          <span class="text-xs text-slate-400">${s.label} <span class="text-slate-600">${weightPct}%</span></span>
           <span class="text-xs font-bold tabular-nums" style="color:${barColor}">${pct}</span>
         </div>
         <div class="h-1.5 rounded-full bg-slate-700 overflow-hidden">
@@ -845,29 +833,6 @@ function renderQuarterly(fund) {
   const q = [...fund.quarterly_financials].reverse();
   const maxRev = Math.max(...q.map(x=>x.revenue||0));
   el.innerHTML = q.map(x=>{const r=x.revenue||0,ni=x.net_income||0,pct=maxRev>0?(r/maxRev*100):0,m=r>0?(ni/r*100).toFixed(1):'–';return`<div><div class="flex justify-between text-xs mb-1"><span class="text-slate-400">${x.period}</span><span class="text-slate-200 font-semibold tabular-nums">${fmtCap(r)} <span class="text-slate-500 font-normal">/ ${m}% margin</span></span></div><div class="h-2 rounded-full bg-slate-700 overflow-hidden"><div class="quarter-bar h-2 rounded-full bg-blue-500" style="width:${pct}%"></div></div></div>`}).join('');
-}
-
-// ── Render: sentiment + catalysts ────────────────────────────────────────────
-function renderSentiment(ss) {
-  const total = ss.total||1;
-  document.getElementById('sentiment-bars').innerHTML = [['Bullish',ss.bullish],['Bearish',ss.bearish],['Neutral',ss.neutral]].map(([key,count])=>{const cfg=SENTIMENT[key];const pct=Math.round((count/total)*100);return`<div><div class="flex justify-between items-center mb-1.5"><span class="${cfg.text} text-sm font-semibold">${cfg.label}</span><span class="text-slate-300 text-sm font-bold tabular-nums">${count} <span class="text-slate-500 font-normal">/ ${ss.total}</span></span></div><div class="h-2 rounded-full bg-slate-700 overflow-hidden"><div class="h-2 rounded-full transition-all duration-500" style="width:${ss.total?pct:0}%;background:${cfg.bar}"></div></div></div>`}).join('');
-}
-function renderAiError(msg) {
-  // Insert/remove a warning banner above the catalyst cards
-  const existing = document.getElementById('ai-error-banner');
-  if (existing) existing.remove();
-  if (!msg) return;
-  const banner = document.createElement('div');
-  banner.id = 'ai-error-banner';
-  banner.className = 'bg-amber-950/40 border border-amber-500/30 rounded-2xl p-4 text-center mb-3 fade-in';
-  banner.innerHTML = `<p class="text-amber-400 text-sm font-medium">${escHtml(msg)}</p>`;
-  const container = document.getElementById('catalyst-cards');
-  container.parentElement.insertBefore(banner, container);
-}
-
-function renderCatalysts(catalysts) {
-  if (!catalysts?.length) { document.getElementById('catalyst-cards').innerHTML = '<div class="text-slate-500 text-sm text-center py-10">無催化劑新聞</div>'; return; }
-  document.getElementById('catalyst-cards').innerHTML = catalysts.map(c=>{const cfg=SENTIMENT[c.sentiment]||SENTIMENT.Neutral;const icon=CATALYST_ICON[c.catalyst_type]||'📰';const date=c.published?c.published.slice(0,10):'';return`<div class="bg-slate-800 rounded-2xl p-4 border border-slate-700 card-hover fade-in cursor-default mb-3" style="border-left:3px solid ${cfg.border}"><div class="flex items-start justify-between gap-2 mb-2"><span class="text-xs text-slate-400 flex items-center gap-1.5 min-w-0"><span class="shrink-0">${icon}</span><span class="truncate">${c.catalyst_type.replace('_',' ')} · ${c.source}</span></span><span class="shrink-0 text-xs font-bold px-2 py-0.5 rounded-full border ${cfg.badge}">${cfg.label}</span></div><h3 class="text-sm font-semibold text-slate-100 mb-2 leading-snug line-clamp-2">${escHtml(c.original_title)}</h3><p class="text-sm text-slate-300 leading-relaxed">${escHtml(c.summary)}</p><div class="mt-3 flex items-center justify-between text-xs text-slate-500"><span>${date}</span><a href="${c.link}" target="_blank" rel="noopener" class="hover:text-blue-400 transition-colors">閱讀原文 →</a></div></div>`}).join('');
 }
 
 // ── Render: peer comparison ───────────────────────────────────────────────────

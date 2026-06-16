@@ -13,8 +13,6 @@ from . import scoring_config as cfg
 def compute_composite_score(
     indicators: dict | None,
     fundamentals: dict | None,
-    sentiment_summary: dict | None,
-    catalysts: list[dict] | None,
     kline: list[dict] | None,
     patterns: list[dict] | None = None,
 ) -> dict:
@@ -26,30 +24,16 @@ def compute_composite_score(
       - grade: { label, label_en, color }
       - technical: { score, details }
       - fundamental: { score, details }
-      - sentiment: { score, details, available }
       - weights_used: which weight set was applied
     """
     tech = _score_technical(indicators, kline, patterns)
     fund = _score_fundamental(fundamentals)
-    sent = _score_sentiment(sentiment_summary, catalysts)
+    weights = cfg.DIMENSION_WEIGHTS
 
-    if sent["available"]:
-        weights = cfg.DIMENSION_WEIGHTS
-    else:
-        weights = cfg.FALLBACK_WEIGHTS
-
-    composite = 0.0
-    if sent["available"]:
-        composite = (
-            tech["score"] * weights["technical"]
-            + fund["score"] * weights["fundamental"]
-            + sent["score"] * weights["sentiment"]
-        )
-    else:
-        composite = (
-            tech["score"] * weights["technical"]
-            + fund["score"] * weights["fundamental"]
-        )
+    composite = (
+        tech["score"] * weights["technical"]
+        + fund["score"] * weights["fundamental"]
+    )
 
     composite = _clamp(round(composite))
     grade = _get_grade(composite)
@@ -59,7 +43,6 @@ def compute_composite_score(
         "grade": grade,
         "technical": tech,
         "fundamental": fund,
-        "sentiment": sent,
         "weights_used": weights,
     }
 
@@ -420,74 +403,6 @@ def _score_dividend(fund: dict | None) -> int:
         bonus = _lookup_score(consecutive, cfg.DIVIDEND_CONSECUTIVE_BONUS, 0)
         base += bonus
     return _clamp(base)
-
-
-# ── Sentiment Score ───────────────────────────────────────────────────────────
-
-def _score_sentiment(
-    sentiment_summary: dict | None,
-    catalysts: list[dict] | None,
-) -> dict:
-    if not sentiment_summary or sentiment_summary.get("total", 0) == 0:
-        return {"score": 50, "available": False, "details": {}}
-
-    ratio_score = _score_bull_bear_ratio(sentiment_summary)
-    count_score = _score_catalyst_count(catalysts)
-    impact_score = _score_catalyst_impact(catalysts)
-
-    total = (
-        ratio_score * cfg.SENT_WEIGHTS["bull_bear_ratio"]
-        + count_score * cfg.SENT_WEIGHTS["catalyst_count"]
-        + impact_score * cfg.SENT_WEIGHTS["catalyst_impact"]
-    )
-
-    return {
-        "score": _clamp(round(total)),
-        "available": True,
-        "details": {
-            "bull_bear_ratio": ratio_score,
-            "catalyst_count": count_score,
-            "catalyst_impact": impact_score,
-        },
-    }
-
-
-def _score_bull_bear_ratio(ss: dict) -> int:
-    total = ss.get("total", 0)
-    if total == 0:
-        return 50
-    bullish = ss.get("bullish", 0)
-    return _clamp(round((bullish / total) * 100))
-
-
-def _score_catalyst_count(catalysts: list[dict] | None) -> int:
-    if not catalysts:
-        return cfg.CATALYST_COUNT_SCORES[0]
-    count = len(catalysts)
-    return cfg.CATALYST_COUNT_SCORES.get(count, cfg.CATALYST_COUNT_DEFAULT)
-
-
-def _score_catalyst_impact(catalysts: list[dict] | None) -> int:
-    if not catalysts:
-        return 50
-
-    bullish_impact = 0.0
-    bearish_impact = 0.0
-
-    for c in catalysts:
-        cat_type = c.get("catalyst_type", "")
-        weight = cfg.CATALYST_IMPACT.get(cat_type, cfg.CATALYST_IMPACT_DEFAULT)
-        sentiment = c.get("sentiment", "Neutral")
-        if sentiment == "Bullish":
-            bullish_impact += weight
-        elif sentiment == "Bearish":
-            bearish_impact += weight
-
-    total_impact = bullish_impact + bearish_impact
-    if total_impact == 0:
-        return 50
-
-    return _clamp(round((bullish_impact / total_impact) * 100))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
