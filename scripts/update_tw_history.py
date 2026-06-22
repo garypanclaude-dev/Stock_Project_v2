@@ -29,7 +29,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from stock_fetcher import tw_db
-from stock_fetcher.tw_market import fetch_for_date, fetch_industry_mapping
+from stock_fetcher.tw_market import (
+    fetch_for_date,
+    fetch_industry_mapping,
+    fetch_institutional_for_date,
+    fetch_monthly_revenue,
+    fetch_shareholder_distribution,
+    API_DELAY_SECONDS,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -130,6 +137,57 @@ def _refresh_companies():
     return affected
 
 
+def _fetch_extended_data(dates: list[date]):
+    """Fetch institutional, revenue, and TDCC data for the given dates."""
+    # ── Institutional trading ─────────────────────────────────────────────
+    existing_inst = tw_db.get_institutional_dates()
+    inst_dates = [d for d in dates if d.isoformat() not in existing_inst]
+    if inst_dates:
+        logger.info("Institutional: %d dates to fetch", len(inst_dates))
+        for d in inst_dates:
+            try:
+                result = fetch_institutional_for_date(d)
+                if result["trading_day"] and result["records"]:
+                    n = tw_db.upsert_institutional_trading(result["records"])
+                    logger.info("  %s: %d institutional records", d, n)
+                time.sleep(API_DELAY_SECONDS)
+            except Exception as e:
+                logger.error("  Institutional %s failed: %s", d, e)
+    else:
+        logger.info("Institutional: already up to date")
+
+    # ── Monthly revenue (latest period only) ──────────────────────────────
+    try:
+        rev_result = fetch_monthly_revenue()
+        if rev_result:
+            n = tw_db.upsert_monthly_revenue(rev_result)
+            months = sorted(tw_db.get_revenue_months())
+            logger.info("Revenue: %d records upserted, months in DB: %s", n, months)
+        else:
+            logger.info("Revenue: no new data available")
+    except Exception as e:
+        logger.error("Revenue fetch failed: %s", e)
+
+    # ── TDCC shareholder (latest Friday) ──────────────────────────────────
+    existing_sh = tw_db.get_shareholder_dates()
+    today = date.today()
+    # Find the most recent Friday
+    days_since_friday = (today.weekday() - 4) % 7
+    latest_friday = today - timedelta(days=days_since_friday)
+    if latest_friday.isoformat() not in existing_sh:
+        try:
+            records = fetch_shareholder_distribution(latest_friday)
+            if records:
+                n = tw_db.upsert_shareholder_concentration(records)
+                logger.info("TDCC %s: %d stocks", latest_friday, n)
+            else:
+                logger.info("TDCC %s: no data (not published yet?)", latest_friday)
+        except Exception as e:
+            logger.error("TDCC %s failed: %s", latest_friday, e)
+    else:
+        logger.info("TDCC: already up to date (%s)", latest_friday)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Update TW stock history in SQLite (incremental gap-fill).",
@@ -148,6 +206,8 @@ def main():
                         help="Backfill the last N trading days")
     parser.add_argument("--skip-companies", action="store_true",
                         help="Don't refresh the companies table")
+    parser.add_argument("--skip-extended", action="store_true",
+                        help="Skip institutional/TDCC/revenue fetch")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show what would be fetched without actually fetching")
     args = parser.parse_args()
@@ -203,7 +263,11 @@ def main():
             logger.error("  %s: ❌ %s", d, e)
             failed_dates.append(d)
 
-    # 4. Report
+    # 4. Extended data: institutional + revenue + TDCC
+    if not args.skip_extended:
+        _fetch_extended_data(dates_to_fetch)
+
+    # 5. Report
     logger.info("=" * 60)
     logger.info("Summary: %d ✅ saved | %d ⏭ skipped | %d ❌ failed",
                 success_count, skipped_count, len(failed_dates))

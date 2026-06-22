@@ -62,6 +62,7 @@ def run_backtest(
 
     prices, _ = _load_prices_into_memory()
     companies = tw_db.get_all_companies()
+    inst_data, revenue_data, shareholder_data = _load_extended_data()
     date_to_idx = {d: i for i, d in enumerate(trading_dates)}
 
     backtest_dates = trading_dates[WARM_UP_DAYS:]
@@ -92,6 +93,8 @@ def run_backtest(
         if signal_date not in screener_cache:
             screener_cache[signal_date] = _run_screener_inmem(
                 signal_date, prices, companies, trading_dates,
+                inst_data=inst_data, revenue_data=revenue_data,
+                shareholder_data=shareholder_data,
             )
 
         candidates = screener_cache[signal_date]
@@ -227,6 +230,39 @@ def _calc_horizon_stats(signals: list[dict], n: int) -> dict:
 
 # ── Data loading ─────────────────────────────────────────────────────────────
 
+def _load_extended_data() -> tuple[dict, dict, dict]:
+    """Load institutional, revenue, and shareholder data into memory indexes.
+
+    Returns
+    -------
+    inst_data : {symbol: {date: {foreign_net, trust_net, dealer_net, total_net}}}
+    revenue_data : {symbol: [{year_month, revenue_yoy, revenue_mom}]}  (sorted asc)
+    shareholder_data : {symbol: {date: {large_holder_pct}}}
+    """
+    inst_data: dict[str, dict[str, dict]] = defaultdict(dict)
+    for row in tw_db.get_all_institutional_trading():
+        sym = row.pop("symbol")
+        dt = row.pop("date")
+        inst_data[sym][dt] = row
+
+    revenue_data: dict[str, list[dict]] = defaultdict(list)
+    for row in tw_db.get_all_monthly_revenue():
+        sym = row.pop("symbol")
+        revenue_data[sym].append(row)
+
+    shareholder_data: dict[str, dict[str, dict]] = defaultdict(dict)
+    for row in tw_db.get_all_shareholder_concentration():
+        sym = row.pop("symbol")
+        dt = row.pop("date")
+        shareholder_data[sym][dt] = row
+
+    logger.info(
+        "Extended data loaded: %d symbols w/ inst, %d w/ revenue, %d w/ shareholder",
+        len(inst_data), len(revenue_data), len(shareholder_data),
+    )
+    return dict(inst_data), dict(revenue_data), dict(shareholder_data)
+
+
 def _load_prices_into_memory() -> tuple[
     dict[str, dict[str, dict]],
     dict[str, list[str]],
@@ -291,6 +327,10 @@ def _run_screener_inmem(
     prices: dict[str, dict[str, dict]],
     companies: dict[str, dict],
     trading_dates: list[str],
+    *,
+    inst_data: dict | None = None,
+    revenue_data: dict | None = None,
+    shareholder_data: dict | None = None,
 ) -> list[dict]:
     """Replay the screener at a historical date using in-memory data."""
     snapshot: list[dict] = []
@@ -314,6 +354,10 @@ def _run_screener_inmem(
     histories: dict[str, list[dict]] = {}
     for s in snapshot:
         sym = s["symbol"]
-        histories[sym] = _get_history_before(prices, sym, target_date, days=65)
+        histories[sym] = _get_history_before(prices, sym, target_date, days=200)
 
-    return run_screener_with_data(snapshot, histories)
+    return run_screener_with_data(
+        snapshot, histories,
+        inst_data=inst_data, revenue_data=revenue_data,
+        shareholder_data=shareholder_data,
+    )

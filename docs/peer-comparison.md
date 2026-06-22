@@ -1,12 +1,14 @@
 # P1-5 同業比較、自選股比較、潛力股篩選
 
-> 版本：4.0
-> 最後更新：2026-06-11
+> 版本：6.0
+> 最後更新：2026-06-22
 > v3.3：潛力股篩選 B7 整合 — 8 → 10 因子，新增 KD、OBV；ma_trend 升級為 4 態（含糾結判定）
 > v3.4：潛力股篩選 B8 整合 — 10 → 11 因子，新增 K 線型態因子
 > v3.5：潛力股篩選 B9 整合 — 11 → 13 因子，新增殖利率穩定度 + PE 60 日歷史分位
 > v3.6：修正對照表 — 綜合評分技術面更新為 6 指標（含 KD/OBV）、量能欄位更正
-> v4.0：新增歷史回測功能 — Top 5 模擬投資組合、停利停損出場機制、權益曲線；DB 擴充至 250 個交易日
+> v4.0：新增歷史回測功能 — 前瞻報酬率分析；DB 擴充至 250 個交易日
+> v5.0：**篩選器全面改版 B11** — 13 因子 → 10 因子。IC 分析確認舊因子為反向指標，新設計以籌碼面+基本面+技術面三維均衡取代。新增 3 張 DB 表（institutional_trading / monthly_revenue / shareholder_concentration）。每日更新整合。
+> v6.0：**篩選器 v5 因子擴充** — 10 因子 → 16 因子。新增 MA200 前置過濾、BB squeeze、成交量突破、箱型突破、Anchored VWAP、Liquidity Sweep、法人吃貨比、外資/投信連買天數。移除 revenue_acceleration（資料不足）及 ma_convergence（與 BB squeeze 重疊）。權重重分配：技術面 40% / 籌碼面 40% / 基本面 20%。
 
 ## 概述
 
@@ -14,8 +16,8 @@
 
 1. **同業比較**：查看個股時自動帶出同產業競爭對手，橫向比較指標 + 相對走勢圖（含大盤）
 2. **自選股比較**：Watchlist 內所有股票 + 大盤指數放在同一張圖比較
-3. **潛力股篩選**：從全台灣上市櫃 ~1,970 支股票中，用 13 因子百分位排名選出 Top 20
-4. **歷史回測**：以過去 1 年資料模擬篩選器的實際操作績效（Top 5 投資組合 + 停利停損）
+3. **潛力股篩選**：從全台灣上市櫃 ~1,970 支股票中，用 **10 因子**（籌碼面+基本面+技術面三維均衡）百分位排名選出 Top 20
+4. **歷史回測**：以過去 1 年資料驗證篩選器信號品質（前瞻報酬率分析）
 
 ---
 
@@ -40,10 +42,10 @@
 | **解決什麼問題** | 這支股票現在適合進場嗎？ | 跟同產業比是強是弱？ | 我的持股哪支最好？ | 全市場哪支最值得關注？ |
 | **比較對象** | 單一股票 vs 絕對標準 | 同產業 3-4 支 | Watchlist 全部 | 全台 ~1,970 支 |
 | **評分方式** | 絕對閾值（P/E<15=75 分） | 簡化基本面分數 | 簡化基本面分數 | 相對百分位排名 |
-| **技術面** | ✅ RSI, MACD, 均線, 布林, KD, OBV | ❌ | ❌ | ✅ 5d/20d 動能, MA 多頭排列, KD, OBV |
-| **基本面** | ✅ P/E, ROE, 營收, Margin, 殖利率 | ✅ P/E, ROE, Margin, 殖利率 | ✅ 同左 | ✅ P/E, P/B, 殖利率 |
-| **量能** | ✅ OBV（量價背離/齊揚） | ❌ | ❌ | ✅ 量能比（今/20d 均量）+ OBV |
-| **風險** | ✅ Beta | ✅ Beta | ✅ Beta | ✅ 20 日波動率 |
+| **技術面** | ✅ RSI, MACD, 均線, 布林, KD, OBV | ❌ | ❌ | ✅ KD, 突破, 量能擠壓, 均線收斂 |
+| **基本面** | ✅ P/E, ROE, 營收, Margin, 殖利率 | ✅ P/E, ROE, Margin, 殖利率 | ✅ 同左 | ✅ 營收年增率, 營收加速度, PE 歷史分位 |
+| **籌碼面** | ❌ | ❌ | ❌ | ✅ 外資/投信 5 日淨買超, 大戶持股變化 |
+| **風險** | ✅ Beta | ✅ Beta | ✅ Beta | ❌（已移除低波動因子） |
 | **AI 情緒** | ✅ Gemini 分析 | ❌ | ❌ | ❌ |
 | **資料來源** | yfinance + Gemini | yfinance | yfinance | **SQLite（250 個交易日 TWSE/TPEX 歷史）** |
 | **規格文件** | `docs/composite-score.md` | 本文件 | 本文件 | 本文件 |
@@ -197,10 +199,16 @@ Response: （格式同同業比較）
 
 ```
 data/tw_market.db
-├── companies         (1,979 筆：TWSE 1,090 + TPEX 889)
+├── companies                 (1,979 筆：TWSE 1,090 + TPEX 889)
 │   └── symbol, name, industry, market, updated_at
-└── daily_prices      (~490,000 筆，250 個交易日 × ~1,970 支)
-    └── symbol, date, open, high, low, close, change_pct, volume, pe, pb, yield_pct
+├── daily_prices              (~490,000 筆，250 個交易日 × ~1,970 支)
+│   └── symbol, date, open, high, low, close, change_pct, volume, pe, pb, yield_pct
+├── institutional_trading     (v5.0 新增：法人進出)
+│   └── symbol, date, foreign_net, trust_net, dealer_net, total_net
+├── monthly_revenue           (v5.0 新增：月營收)
+│   └── symbol, year_month, revenue, revenue_yoy, revenue_mom
+└── shareholder_concentration (v5.0 新增：TDCC 集保大戶持股)
+    └── symbol, date, large_holder_pct, total_holders
 ```
 
 **為什麼換成 SQLite？**
@@ -218,53 +226,77 @@ data/tw_market.db
 | TPEX peratio | 上櫃股票 P/E、殖利率、P/B | 每日 | ~880 支 |
 | TWSE openapi t187ap03_L | 上市公司產業分類 | 偶爾 | 1,090 公司 |
 | TPEX openapi mopsfin_t187ap03_O | 上櫃公司產業分類 | 偶爾 | 889 公司 |
+| **TWSE T86** (v5.0) | 上市三大法人買賣超 | 每日 | ~1,090 支 |
+| **TPEX 3itrade** (v5.0) | 上櫃三大法人買賣超 | 每日 | ~880 支 |
+| **TWSE/TPEX opendata 營收** (v5.0) | 月營收（當期） | 每月 | ~1,960 支 |
+| **TDCC opendata 1-5** (v5.0) | 集保戶股權分散表 | 每週五 | ~2,946 支 |
 
 > **註**：兩個市場合計約 1,970 支股票，已涵蓋台股主要交易標的。
 > 興櫃股票（約 300 支）目前不在範圍內。
+> 月營收僅能取得最新期資料（MOPS 歷史查詢受 WAF 封鎖），需透過每月累積建立歷史。
 
 ### 前置篩選（排除不適合的股票）
 
 - 排除日均成交量 < 500 張（流動性不足）
 - 排除代號非 4 碼純數字（特別股、ETF、權證）
 - 排除收盤價為 0 或無成交紀錄
+- **排除收盤價 < MA200**（長期處於空頭趨勢的股票）。歷史不足 200 日者不排除。
 
-### 13 因子評分模型（v3.5 更新，B9 整合）
+### 16 因子評分模型（v6.0）
 
-| 因子 | 權重 | 計算方式 | 設計理由 |
-|------|------|---------|---------|
-| **5日動能** | 10% | (今日收盤 / 5日前收盤 - 1) 百分位排名 | 抓短期強勢 |
-| **20日動能** | 10% | (今日收盤 / 20日前收盤 - 1) 百分位排名 | 確認中期趨勢 |
-| **價值 (Value)** | 11% | P/E 百分位排名（越低越好，反轉） | 找被低估的 |
-| **淨值比 (PB Value)** | 7% | P/B 百分位排名（越低越好，反轉） | 強化價值篩選 |
-| **品質 (Quality)** | 11% | 殖利率百分位排名（越高越好） | 找獲利穩定的 |
-| **量能比 (Volume Ratio)** | 7% | 今日量 / 近 20 日均量 百分位 | 放量代表關注度 |
-| **均線排列 (MA Trend, v3.3 升級)** | 8% | 4 態分類（多頭 100 / 空頭 0 / 糾結 50 / 中性 50） | 順勢操作 |
-| **低波動 (Low Vol)** | 7% | 近 20 日漲跌幅標準差（越低越好，反轉） | 偏好穩定 |
-| **KD (v3.3 新增)** | 8% | 最新 K 值絕對評分（K < 20 → 95；K > 80 → 10） | 動能超賣加分 |
-| **OBV (v3.3 新增)** | 7% | 5 日 OBV 斜率 vs 5 日股價斜率比對 | 量價配合度 |
-| **K 線型態 (Pattern, v3.4 新增)** | 4% | 近 10 日看多型態計數，看空覆蓋為 30 | 短期反轉訊號 |
-| **殖利率穩定度 (v3.5 新增)** | 5% | 近 60 日 yield 標準差（越低越好，反轉） | 配息政策穩定 |
-| **PE 60 日分位 (v3.5 新增)** | 5% | 當前 PE 在自身 60 日歷史的百分位（越低越好，反轉） | 比自己過去便宜 |
+> **改版背景**：v5.0 的 revenue_acceleration 因資料僅 1 個月無法計算，ma_convergence 與新增的 BB squeeze 功能重疊。v6.0 擴充因子池至 16 個，強化技術面與籌碼面的覆蓋度，新增 MA200 前置過濾排除長期空頭股票。權重調整為技術面 40% / 籌碼面 40% / 基本面 20%。
 
-> **百分位排名**：每個因子都轉換為 0-100。例如 P/E 排名百分位 80 = 這支股票的 P/E 比 80% 的股票都低（便宜）。
+| 維度 | 因子 | 權重 | 計算方式 | 排名方向 | 設計理由 |
+|------|------|------|---------|---------|---------|
+| **技術面 40%** | kd | 7% | K(9,3,3) 值絕對評分 | 越高越好 | 超賣反彈機率高，IC 驗證正向 |
+| | breakout | 6% | (收盤 - 20 日最高) / 20 日最高 × 100 | 越高越好 | 突破近期高點 = 動能啟動 |
+| | squeeze_volume | 6% | max(0, (σ20d-σ5d)/σ20d) × 量比 | 越大越好 | 波動收縮後放量 = 蓄勢待發 |
+| | bb_squeeze | 6% | 布林帶寬在 120 日內的百分位 | 越低越好（反轉） | 帶寬歷史新低 = 即將突破 |
+| | volume_breakout | 5% | today_vol / avg_vol_20d | 越大越好 | 成交量放大 = 資金進場訊號 |
+| | box_breakout | 5% | close ≥ 60d_high 時 100/range%，否則 0 | 越大越好 | 窄幅箱型整理後突破上緣 |
+| | avwap_dev | 3% | (close - AVWAP) / AVWAP × 100，錨定 60 日 swing low | 越高越好 | 價格站在量價成本之上 = 持股信心強 |
+| | liquidity_sweep | 2% | low < 5d_min_low 且 close 收回時的回升幅度 | 越大越好 | 掃底後收回 = 主力吸貨訊號 |
+| **籌碼面 40%** | foreign_net_5d | 10% | 近 5 日外資淨買超張數加總 | 越多越好 | 外資為最大法人，連續買超代表長線看好 |
+| | trust_net_5d | 9% | 近 5 日投信淨買超張數加總 | 越多越好 | 投信操作較積極，連續買超代表認同 |
+| | inst_volume_ratio | 7% | (\|外資5d\|+\|投信5d\|) / (avg_vol_5d×5) × 100 | 越大越好 | 法人交易佔比高 = 訊號強度大 |
+| | large_holder_change | 6% | 最近一週 vs 前一週大戶持股比例差 | 越大越好 | TDCC 集保資料，大戶增持代表籌碼集中 |
+| | foreign_streak | 5% | 外資連續淨買天數（負值=連賣） | 越大越好 | 連買天數越長 = 越可能是策略性布局 |
+| | trust_streak | 3% | 投信連續淨買天數（負值=連賣） | 越大越好 | 投信連續進場 = 基金經理人認同 |
+| **基本面 20%** | pe_percentile | 12% | 當前 PE 在自身 60 日歷史的百分位 | 越低越好（反轉） | 比自己過去便宜 = 相對低估 |
+| | revenue_yoy | 8% | 最新月營收年增率 (%) | 越高越好 | 營收成長是最直接的基本面訊號 |
+
+> **計分方式**：`Score = Σ (百分位排名_i × 權重_i)`，分數範圍 0-100，取 Top 20。
 >
-> **KD 與 OBV 為例外**：先用絕對閾值轉成 0-100 分（同綜合評分的邏輯），再做百分位排名。這樣兩個指標的「方向性」（高 KD 不好、量價齊揚好）能被正確編碼。
+> **百分位排名**：每個因子都轉換為 0-100 cross-sectional 百分位。例如 foreign_net_5d 排名 88 = 該股外資買超金額超過 88% 的股票。
+>
+> **KD 為例外**：先用絕對閾值轉成 0-100 分（K < 20 → 95；K > 80 → 10），再做百分位排名。
 
-### v3.3 均線排列升級（4 態取代二態）
+### IC 驗證結果
 
-舊版（v3.0）：`價 > MA5 > MA20 → 100 / 價 < MA5 < MA20 → 0 / 其他 → 50`
-新版（v3.3）：
+> v6.0 新增因子的 IC 尚需實際回測驗證。以下為 v5.0 既有因子的參考值。
 
-| 狀態 | 條件 | 分數 |
-|------|------|------|
-| 多頭排列 | MA5 > MA10 > MA20 > MA60 且 收盤 > MA5 | 100 |
-| 均線糾結 | (max - min) / mean < 3% | 50 |
-| 中性 | 以上都不符合 | 50 |
-| 空頭排列 | MA5 < MA10 < MA20 < MA60 且 收盤 < MA5 | 0 |
+| 因子 | 5D Mean IC | 20D Mean IC | 訊號強度 |
+|------|-----------|------------|---------|
+| revenue_yoy | +0.076 | +0.107 | ★★★ 極強 |
+| pe_percentile | +0.016 | +0.013 | ★ 弱正 |
+| kd | +0.016 | +0.019 | ★ 弱正 |
+| squeeze_volume | +0.003 | +0.003 | 邊緣 |
 
-**判定優先級**：糾結 > 多頭 > 空頭 > 中性。
+### 資料可用性注意事項
 
-### v3.3 KD 因子細節
+| 因子 | 資料來源 | 限制 |
+|------|---------|------|
+| foreign_net_5d / trust_net_5d | TWSE T86 + TPEX 3itrade | 需 5 個交易日的法人資料 |
+| foreign_streak / trust_streak | 同上 | 需 20 個交易日歷史以計算連續天數 |
+| inst_volume_ratio | 法人資料 + daily_prices | 需法人資料 + 5 日成交量 |
+| large_holder_change | TDCC opendata 1-5 | 每週五公布，需至少 2 週資料 |
+| revenue_yoy | TWSE/TPEX opendata | 僅能取得最新期，需每月累積 |
+| pe_percentile | daily_prices 表 | 需 10+ 日歷史 PE 資料 |
+| bb_squeeze | daily_prices 表 | 需 20 日以上收盤價（理想 120 日） |
+| box_breakout / avwap_dev | daily_prices 表 | 需 60 日 OHLCV |
+| MA200 前置過濾 | daily_prices 表 | 需 200 日收盤價，不足者不排除 |
+
+### KD 因子細節
 
 KD(9,3,3) 台股版，依最新 K 值絕對評分後做百分位排名：
 
@@ -277,75 +309,16 @@ KD(9,3,3) 台股版，依最新 K 值絕對評分後做百分位排名：
 | 70-80 | 30 |
 | > 80 | 10（嚴重超買） |
 
-### v3.3 OBV 因子細節
-
-比對近 5 日「OBV 斜率」vs「股價斜率」的方向組合：
-
-| 情境 | 絕對分數 |
-|------|---------|
-| 量價齊揚（價↑ + OBV↑） | 80 |
-| 看多背離（價↓ + OBV↑） | 70 |
-| 中性 | 50 |
-| 看空背離（價↑ + OBV↓） | 30 |
-| 量價齊跌（價↓ + OBV↓） | 20 |
-
-### v3.4 K 線型態因子細節
-
-掃描最近 10 個交易日，計算看多型態（錘子 / 看多吞噬 / 晨星）與看空型態（流星 / 看空吞噬 / 夜星）的出現數量：
-
-| 條件 | 絕對分數 |
-|------|---------|
-| 看空型態出現任 1 次 | **30**（看空覆蓋，不論看多次數） |
-| 0 個看多 | 50 |
-| 1 個看多 | 70 |
-| 2 個看多 | 85 |
-| 3+ 個看多 | 95 |
-
-**設計邏輯**：看空訊號優先於看多 — 即使同時出現看多型態，只要有 1 個看空型態就壓低分數到 30。因為短期反轉訊號的「風險方向」優先於「機會方向」。
-
-> 設定（`tw_market.py`）：
-> ```python
-> PATTERN_FACTOR_LOOKBACK = 10            # 掃描視窗
-> PATTERN_FACTOR_BEARISH_OVERRIDE = 30    # 看空覆蓋分數
-> PATTERN_FACTOR_BULLISH_SCORES = {0: 50, 1: 70, 2: 85}
-> PATTERN_FACTOR_BULLISH_DEFAULT = 95     # 3+
-> ```
-
-### v3.5 殖利率穩定度因子
-
-計算近 60 日 DB 內 `yield_pct` 的標準差，標準差**越小**代表殖利率變動越穩定（公司配息政策穩定 / 股價相對穩定）。經百分位排名（反轉）後，**穩定的股票排名越高**。
-
-```python
-YIELD_STABILITY_LOOKBACK = 60   # 樣本視窗
-# 排名計算時 reverse=True
-```
-
-### v3.5 PE 60 日分位因子
-
-計算當前 PE 在自身近 60 日 PE 分布中的百分位（不是全市場，是個股 vs 個股自己）。
-- 例：某股近 60 日 PE 範圍 12-18，當前 PE = 13 → 約在 20% 分位（相對自己最近便宜）
-- 經百分位排名（反轉）後，**相對自己過去便宜的股票排名越高**
-
-```python
-PE_PERCENTILE_LOOKBACK = 60     # 樣本視窗
-# 排名計算時 reverse=True
-```
-
-**和「價值 (Value)」因子的差異**：
-- value 是「PE 在全市場排名」（跟其他股票比）
-- pe_percentile 是「PE 在自己歷史排名」（跟自己過去比）
-- 兩者並用：找到**全市場便宜 + 相對自己過去也便宜**的股票
-
 ### 與綜合投資評分的差異
 
 | | 綜合投資評分 | 潛力股篩選 |
 |---|---|---|
 | **評分方式** | 絕對閾值 | 百分位排名 |
-| **例子** | P/E < 15 → 75 分（不管別人） | P/E 排名前 20% → 80 分（跟全市場比） |
-| **技術面** | RSI, MACD, 均線, 布林, KD, OBV | 5d/20d 動能, MA 多頭排列, KD, OBV |
-| **基本面** | P/E, ROE, 營收趨勢, Margin, 殖利率 | P/E, P/B, 殖利率 |
-| **量能** | OBV | 量能比（今/20d 均量）+ OBV |
-| **AI 情緒** | ✅ 佔 25% | ❌ 不包含 |
+| **例子** | P/E < 15 → 75 分（不管別人） | 外資淨買超排名前 10% → 90 分（跟全市場比） |
+| **技術面** | RSI, MACD, 均線, 布林, KD, OBV | KD, 突破, 量能擠壓, BB squeeze, 量突破, 箱型突破, AVWAP, Liquidity Sweep |
+| **基本面** | P/E, ROE, 營收趨勢, Margin, 殖利率 | 營收年增率, PE 歷史分位 |
+| **籌碼面** | ❌ | ✅ 外資/投信淨買超, 法人吃貨比, 大戶持股, 外資/投信連買天數 |
+| **前置過濾** | ❌ | ✅ MA200 年線過濾（排除長期空頭） |
 | **適用場景** | 評估個股是否適合進場交易 | 從全市場篩選短線/波段候選標的 |
 
 ### API
@@ -355,33 +328,36 @@ GET /api/stock-screener?mock=true
 
 Response:
 {
-  "last_updated": "2026-06-04T00:00:00",
-  "total_stocks": 1084,
+  "last_updated": "2026-06-17T00:00:00",
+  "total_stocks": 1973,
   "top_picks": [
     {
       "rank": 1,
-      "symbol": "9958.TW",
-      "name": "世紀鋼",
-      "score": 82,
-      "close": 121.00,
-      "change_pct": 2.98,
-      "pe": 14.5,
-      "yield_pct": 3.2,
-      "volume": 12345,
+      "symbol": "8131.TW",
+      "name": "福懋科",
+      "score": 74,
+      "close": 54.60,
+      "change_pct": 1.30,
+      "pe": 12.8,
+      "yield_pct": 4.1,
+      "volume": 2345,
       "factors": {
-        "momentum_5d":      93,
-        "momentum_20d":     76,
-        "value":            65,
-        "pb_value":         58,
-        "quality":          72,
-        "volume_ratio":     99,
-        "ma_trend":         100,
-        "low_vol":          55,
-        "kd":               46,
-        "obv":              96,
-        "pattern":          85,
-        "yield_stability":  71,
-        "pe_percentile":    63
+        "kd":                   44,
+        "breakout":             99,
+        "squeeze_volume":       81,
+        "bb_squeeze":           72,
+        "volume_breakout":      65,
+        "box_breakout":         88,
+        "avwap_dev":            55,
+        "liquidity_sweep":      0,
+        "foreign_net_5d":       88,
+        "trust_net_5d":         66,
+        "inst_volume_ratio":    73,
+        "large_holder_change":  94,
+        "foreign_streak":       60,
+        "trust_streak":         45,
+        "pe_percentile":        63,
+        "revenue_yoy":          78
       }
     },
     ...
@@ -409,7 +385,7 @@ Response:
 
 ```
 每個交易日 D（有持倉 slot 空出時）：
-  1. 用「截至 D 日」的歷史資料跑 13 因子篩選器 → 取 Top 5
+  1. 用「截至 D 日」的歷史資料跑 10 因子篩選器 → 取 Top 5
   2. D+1 以開盤價買入（等權重分配）
   3. 每支持股獨立判定出場：
      a. 停利：當日 High ≥ 買入價 × 1.03 → 以買入價 × 1.03 結算
@@ -542,21 +518,33 @@ Response:
 
 ## 資料管理（v3.0 新增）
 
-### 工具：`scripts/update_tw_history.py`
+### 工具一：`scripts/update_tw_history.py`
 
-CLI 工具，負責維護 SQLite 中的 TW 市場歷史資料。
+CLI 工具，負責維護 SQLite 中的 TW 市場歷史資料。**v5.0 起每次執行會同時更新法人買賣超、月營收、TDCC 集保資料。**
 
 ### 使用模式
 
 | 模式 | 指令 | 用途 |
 |------|------|------|
-| **預設增量** | `python scripts/update_tw_history.py` | 找 DB 最新日期 → 抓到今天，跳過已存在的 |
+| **預設增量** | `python scripts/update_tw_history.py` | 找 DB 最新日期 → 抓到今天，含擴充資料 |
 | **完整檢查** | `python scripts/update_tw_history.py --full-check` | 比對最近 250 天的交易日，補齊任何位置的漏洞 |
 | **首次建構** | `python scripts/update_tw_history.py --backfill 250` | 回填最近 250 個交易日（DB 空時自動觸發） |
 | **單一日期** | `python scripts/update_tw_history.py --date 2026-06-03` | 補抓特定日期 |
 | **日期範圍** | `python scripts/update_tw_history.py --from 2026-05-01 --to 2026-05-31` | 補抓指定範圍 |
 | **預覽模式** | `python scripts/update_tw_history.py --dry-run` | 顯示會抓哪些日期，不實際執行 |
 | **跳過公司更新** | `python scripts/update_tw_history.py --skip-companies` | 只更新價格，不重抓產業分類 |
+| **跳過擴充資料** | `python scripts/update_tw_history.py --skip-extended` | 只更新價格，跳過法人/營收/TDCC |
+
+### 工具二：`scripts/backfill_new_data.py`（v5.0 新增）
+
+專門回填法人買賣超和 TDCC 集保歷史資料，用於首次建構 v5.0 資料。
+
+| 模式 | 指令 | 用途 |
+|------|------|------|
+| **全部回填** | `python scripts/backfill_new_data.py` | 法人 + TDCC 全部回填 |
+| **僅法人** | `python scripts/backfill_new_data.py --inst-only` | 只回填法人進出 |
+| **僅 TDCC** | `python scripts/backfill_new_data.py --tdcc-only` | 只回填集保資料 |
+| **預覽** | `python scripts/backfill_new_data.py --dry-run` | 顯示計畫，不執行 |
 
 ### 自動化處理
 
@@ -569,12 +557,13 @@ CLI 工具，負責維護 SQLite 中的 TW 市場歷史資料。
 
 | 場景 | API 呼叫次數 | 預估時間（含 0.5s 延遲） |
 |------|-----------|----------------------|
-| 首次建構（250 天） | 250 × 4 API + 2 公司分類 | 約 15-20 分鐘 |
-| 日常增量（1 天） | 4 次 | < 5 秒 |
-| 補一週漏洞（5 天） | 20 次 | 約 15 秒 |
+| 首次建構（250 天） | 250 × 4 價格 + 2 公司 | 約 15-20 分鐘 |
+| 首次回填擴充資料 | ~236 法人 + ~51 TDCC + 1 營收 | 約 5-8 分鐘 |
+| 日常增量（1 天） | 4 價格 + 2 法人 + 1 營收 + 1 TDCC | < 10 秒 |
+| 補一週漏洞（5 天） | 20 價格 + 10 法人 | 約 20 秒 |
 | 完整檢查（無漏洞） | 0 次（只查 DB） | < 1 秒 |
 
-> 每日抓取 4 個 API：TWSE 收盤 + TWSE 本益比 + TPEX 收盤 + TPEX 本益比
+> 每日抓取：4 價格 API + 2 法人 API（TWSE T86 + TPEX 3itrade）+ 1 營收 API + 1 TDCC API（週五）
 > 公司分類 2 個 API：TWSE openapi + TPEX openapi（通常只在第一次跑時抓）
 
 ### 建議排程

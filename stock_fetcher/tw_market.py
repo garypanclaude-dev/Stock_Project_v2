@@ -23,6 +23,37 @@ from . import tw_db
 
 # ── Incremental update (shared by CLI and API) ────────────────────────────────
 
+def _incremental_extended_update(dates: list[date], today: date) -> None:
+    """Best-effort fetch of institutional / revenue / TDCC for incremental updates."""
+    existing_inst = tw_db.get_institutional_dates()
+    for d in dates:
+        if d.isoformat() not in existing_inst:
+            try:
+                result = fetch_institutional_for_date(d)
+                if result["trading_day"] and result["records"]:
+                    tw_db.upsert_institutional_trading(result["records"])
+            except Exception:
+                pass
+
+    try:
+        rev = fetch_monthly_revenue()
+        if rev:
+            tw_db.upsert_monthly_revenue(rev)
+    except Exception:
+        pass
+
+    existing_sh = tw_db.get_shareholder_dates()
+    days_since_friday = (today.weekday() - 4) % 7
+    latest_friday = today - timedelta(days=days_since_friday)
+    if latest_friday.isoformat() not in existing_sh:
+        try:
+            records = fetch_shareholder_distribution(latest_friday)
+            if records:
+                tw_db.upsert_shareholder_concentration(records)
+        except Exception:
+            pass
+
+
 def run_incremental_update() -> dict:
     """Fetch trading days from the DB's latest date + 1 up to today.
 
@@ -73,6 +104,9 @@ def run_incremental_update() -> dict:
             logger.error("Incremental update failed for %s: %s", d, exc)
             failed.append(d.isoformat())
 
+    # Extended data: institutional + revenue + TDCC (best-effort)
+    _incremental_extended_update(dates, today)
+
     return {
         "dates_attempted": len(dates),
         "success": success,
@@ -90,27 +124,33 @@ _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit
 API_DELAY_SECONDS = 0.5
 
 # ── Screener config ───────────────────────────────────────────────────────────
-# v3.1 (B7 integration): 8 → 10 factors, added KD + OBV; ma_trend upgraded to
-# 4-state classification (bullish / bearish / tangled / neutral).
-# v3.2 (B8 integration): 10 → 11 factors, added candlestick pattern factor.
-# v3.3 (B9 integration): 11 → 13 factors, added yield_stability + pe_percentile_60d.
+# v5.0: 14-factor model. Tech 40% / Chip 40% / Fund 20%.
+# Added MA200 pre-filter, BB squeeze, volume breakout, box breakout,
+# AVWAP deviation, liquidity sweep, inst volume ratio, foreign/trust streaks.
+# Removed revenue_acceleration (insufficient data) and ma_convergence (overlap).
 SCREENER_CONFIG = {
     "min_volume": 500,
     "top_n": 20,
     "weights": {
-        "momentum_5d":      0.10,
-        "momentum_20d":     0.10,
-        "value":            0.11,
-        "pb_value":         0.07,
-        "quality":          0.11,
-        "volume_ratio":     0.07,
-        "ma_trend":         0.08,
-        "low_vol":          0.07,
-        "kd":               0.08,
-        "obv":              0.07,
-        "pattern":          0.04,
-        "yield_stability":  0.05,
-        "pe_percentile":    0.05,
+        # 技術面 (technicals) — 40%
+        "kd":                   0.07,
+        "breakout":             0.06,
+        "squeeze_volume":       0.06,
+        "bb_squeeze":           0.06,
+        "volume_breakout":      0.05,
+        "box_breakout":         0.05,
+        "avwap_dev":            0.03,
+        "liquidity_sweep":      0.02,
+        # 籌碼面 (chipflow) — 40%
+        "foreign_net_5d":       0.10,
+        "trust_net_5d":         0.09,
+        "inst_volume_ratio":    0.07,
+        "large_holder_change":  0.06,
+        "foreign_streak":       0.05,
+        "trust_streak":         0.03,
+        # 基本面 (fundamentals) — 20%
+        "pe_percentile":        0.12,
+        "revenue_yoy":          0.08,
     },
 }
 
@@ -529,91 +569,395 @@ def _fetch_tpex_pe_for_date(target_date: date) -> dict[str, dict]:
         return {}
 
 
+# ── Institutional trading fetchers (三大法人買賣超) ──────────────────────────
+
+def fetch_institutional_for_date(target_date: date) -> dict:
+    """Fetch TWSE + TPEX institutional trading for a single date.
+
+    Returns: { "date": ..., "records": [...], "trading_day": bool }
+    """
+    if target_date.weekday() >= 5:
+        return {"date": target_date.isoformat(), "records": [], "trading_day": False}
+
+    twse = _fetch_twse_institutional(target_date)
+    time.sleep(API_DELAY_SECONDS)
+    tpex = _fetch_tpex_institutional(target_date)
+
+    all_records = twse + tpex
+    if not all_records:
+        return {"date": target_date.isoformat(), "records": [], "trading_day": False}
+
+    for r in all_records:
+        r["date"] = target_date.isoformat()
+
+    return {"date": target_date.isoformat(), "records": all_records, "trading_day": True}
+
+
+def _fetch_twse_institutional(target_date: date) -> list[dict]:
+    """Fetch TWSE T86: 三大法人買賣超日報（上市個股）."""
+    ds = target_date.strftime("%Y%m%d")
+    url = (
+        f"https://www.twse.com.tw/rwd/zh/fund/T86"
+        f"?date={ds}&selectType=ALLBUT0999&response=json"
+    )
+
+    try:
+        resp = requests.get(url, headers=_HEADERS, timeout=30)
+        data = resp.json()
+
+        if data.get("stat") != "OK":
+            return []
+
+        rows = data.get("data", [])
+        if not rows:
+            for table in data.get("tables", []):
+                if len(table.get("data", [])) > 100:
+                    rows = table["data"]
+                    break
+
+        results = []
+        for row in rows:
+            parsed = _parse_twse_institutional_row(row)
+            if parsed:
+                results.append(parsed)
+
+        logger.info("TWSE institutional: %d records for %s", len(results), target_date)
+        return results
+
+    except Exception as e:
+        logger.error("TWSE institutional fetch failed for %s: %s", target_date, e)
+        return []
+
+
+def _parse_twse_institutional_row(row: list) -> dict | None:
+    """Parse TWSE T86 row.
+
+    Fields: [0] code, [1] name,
+            [2] foreign_buy, [3] foreign_sell, [4] foreign_net,
+            [5] foreign_dealer_buy, [6] foreign_dealer_sell, [7] foreign_dealer_net,
+            [8] trust_buy, [9] trust_sell, [10] trust_net,
+            [11] dealer_net, [12] dealer_self_buy, [13] dealer_self_sell, [14] dealer_self_net,
+            [15] dealer_hedge_buy, [16] dealer_hedge_sell, [17] dealer_hedge_net,
+            [18] total_net
+    """
+    try:
+        code = str(row[0]).strip()
+        if not code.isdigit() or len(code) != 4:
+            return None
+
+        return {
+            "symbol": f"{code}.TW",
+            "foreign_buy":  _parse_tw_int(row[2]),
+            "foreign_sell": _parse_tw_int(row[3]),
+            "foreign_net":  _parse_tw_int(row[4]),
+            "trust_buy":    _parse_tw_int(row[8]),
+            "trust_sell":   _parse_tw_int(row[9]),
+            "trust_net":    _parse_tw_int(row[10]),
+            "dealer_net":   _parse_tw_int(row[11]),
+            "total_net":    _parse_tw_int(row[18]) if len(row) > 18 else None,
+        }
+    except (IndexError, ValueError, TypeError):
+        return None
+
+
+def _fetch_tpex_institutional(target_date: date) -> list[dict]:
+    """Fetch TPEX 三大法人買賣超日報（上櫃個股）."""
+    tw_date = f"{target_date.year - 1911}/{target_date.month:02d}/{target_date.day:02d}"
+    url = (
+        f"https://www.tpex.org.tw/web/stock/3insti/daily_trade/"
+        f"3itrade_hedge_result.php?l=zh-tw&d={tw_date}&se=EW&t=D"
+    )
+
+    try:
+        resp = requests.get(url, headers=_HEADERS, timeout=30)
+        data = resp.json()
+
+        rows = data.get("aaData", [])
+        if not rows:
+            for table in data.get("tables", []):
+                if len(table.get("data", [])) > 100:
+                    rows = table["data"]
+                    break
+
+        results = []
+        for row in rows:
+            parsed = _parse_tpex_institutional_row(row)
+            if parsed:
+                results.append(parsed)
+
+        logger.info("TPEX institutional: %d records for %s", len(results), target_date)
+        return results
+
+    except Exception as e:
+        logger.error("TPEX institutional fetch failed for %s: %s", target_date, e)
+        return []
+
+
+def _parse_tpex_institutional_row(row: list) -> dict | None:
+    """Parse TPEX 3itrade row.
+
+    Fields: [0] code, [1] name,
+            [2] foreign_buy, [3] foreign_sell, [4] foreign_net,
+            [5] foreign_dealer_buy, [6] foreign_dealer_sell, [7] foreign_dealer_net,
+            [8] trust_buy, [9] trust_sell, [10] trust_net,
+            [11] dealer_buy, [12] dealer_sell, [13] dealer_net,
+            [14] dealer_self_buy, [15] dealer_self_sell, [16] dealer_self_net,
+            [17] dealer_hedge_buy, [18] dealer_hedge_sell, [19] dealer_hedge_net,
+            [20] total_net
+    """
+    try:
+        code = str(row[0]).strip()
+        if not code.isdigit() or len(code) != 4:
+            return None
+
+        return {
+            "symbol": f"{code}.TW",
+            "foreign_buy":  _parse_tw_int(row[2]),
+            "foreign_sell": _parse_tw_int(row[3]),
+            "foreign_net":  _parse_tw_int(row[4]),
+            "trust_buy":    _parse_tw_int(row[8]),
+            "trust_sell":   _parse_tw_int(row[9]),
+            "trust_net":    _parse_tw_int(row[10]),
+            "dealer_net":   _parse_tw_int(row[13]) if len(row) > 13 else None,
+            "total_net":    _parse_tw_int(row[20]) if len(row) > 20 else None,
+        }
+    except (IndexError, ValueError, TypeError):
+        return None
+
+
+# ── Monthly revenue fetchers (月營收) ────────────────────────────────────────
+
+def fetch_monthly_revenue() -> list[dict]:
+    """Fetch the latest monthly revenue for all listed + OTC companies.
+
+    Uses TWSE/TPEX opendata APIs which provide the most recent period.
+    Returns list of dicts with: symbol, year_month, revenue, revenue_yoy, etc.
+    """
+    twse = _fetch_twse_opendata_revenue()
+    time.sleep(API_DELAY_SECONDS)
+    tpex = _fetch_tpex_opendata_revenue()
+
+    return twse + tpex
+
+
+def _fetch_twse_opendata_revenue() -> list[dict]:
+    """Fetch TWSE opendata t187ap05_L (上市公司月營收).
+
+    Fields: 出表日期, 資料年月, 公司代號, 公司名稱, 產業別,
+            營業收入-當月營收, 營業收入-上月營收, 營業收入-去年當月營收,
+            營業收入-上月比較增減(%), 營業收入-去年同月增減(%),
+            累計營業收入-當月累計營收, 累計營業收入-去年累計營收,
+            累計營業收入-前期比較增減(%), 備註
+    """
+    url = "https://openapi.twse.com.tw/v1/opendata/t187ap05_L"
+
+    try:
+        resp = requests.get(url, headers=_HEADERS, timeout=30)
+        resp.encoding = "utf-8"
+        data = resp.json()
+
+        if not isinstance(data, list) or not data:
+            return []
+
+        return _parse_opendata_revenue(data, ".TW")
+
+    except Exception as e:
+        logger.error("TWSE opendata revenue fetch failed: %s", e)
+        return []
+
+
+def _fetch_tpex_opendata_revenue() -> list[dict]:
+    """Fetch TPEX opendata mopsfin_t187ap05_O (上櫃公司月營收)."""
+    url = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O"
+
+    try:
+        resp = requests.get(url, headers=_HEADERS, timeout=30)
+        resp.encoding = "utf-8"
+        data = resp.json()
+
+        if not isinstance(data, list) or not data:
+            return []
+
+        return _parse_opendata_revenue(data, ".TW")
+
+    except Exception as e:
+        logger.error("TPEX opendata revenue fetch failed: %s", e)
+        return []
+
+
+def _parse_opendata_revenue(data: list[dict], suffix: str) -> list[dict]:
+    """Parse TWSE/TPEX opendata monthly revenue JSON records."""
+    results = []
+    for row in data:
+        code = str(row.get("公司代號", "")).strip()  # 公司代號
+        if not code.isdigit() or len(code) != 4:
+            continue
+
+        # 資料年月 is in ROC format: "11505" → 2026-05
+        ym_raw = str(row.get("資料年月", "")).strip()  # 資料年月
+        if len(ym_raw) < 4:
+            continue
+        try:
+            roc_year = int(ym_raw[:-2])
+            month = int(ym_raw[-2:])
+            western_year = roc_year + 1911
+            year_month = f"{western_year}-{month:02d}"
+        except (ValueError, IndexError):
+            continue
+
+        # 營業收入-當月營收 (千元)
+        revenue = _parse_tw_int_safe(
+            row.get("營業收入-當月營收", "")
+        )
+        if revenue is None or revenue == 0:
+            continue
+
+        # 營業收入-去年同月增減(%)
+        revenue_yoy = _parse_tw_number(
+            row.get("營業收入-去年同月增減(%)", "")
+        )
+        # 營業收入-上月比較增減(%)
+        revenue_mom = _parse_tw_number(
+            row.get("營業收入-上月比較增減(%)", "")
+        )
+        # 累計營業收入-當月累計營收
+        cumulative = _parse_tw_int_safe(
+            row.get("累計營業收入-當月累計營收", "")
+        )
+        # 累計營業收入-前期比較增減(%)
+        cumulative_yoy = _parse_tw_number(
+            row.get("累計營業收入-前期比較增減(%)", "")
+        )
+
+        results.append({
+            "symbol": f"{code}{suffix}",
+            "year_month": year_month,
+            "revenue": revenue,
+            "revenue_yoy": revenue_yoy,
+            "revenue_mom": revenue_mom,
+            "cumulative_revenue": cumulative,
+            "cumulative_yoy": cumulative_yoy,
+        })
+
+    logger.info("Opendata revenue: %d records for period %s",
+                len(results), results[0]["year_month"] if results else "N/A")
+    return results
+
+
+# ── TDCC shareholder distribution fetcher (集保中心) ─────────────────────────
+
+# TDCC 持股分級: levels 12-15 represent holders of 400,001+ shares (≈400張+)
+_TDCC_LARGE_HOLDER_LEVELS = {"12", "13", "14", "15"}
+_TDCC_TOTAL_LEVEL = "17"
+
+
+def fetch_shareholder_distribution(target_date: date) -> list[dict]:
+    """Fetch shareholder concentration for ALL stocks on a specific date.
+
+    TDCC opendata returns all stocks in a single bulk response.
+    TDCC publishes weekly (Fridays). Non-publication dates return empty.
+
+    Returns list of dicts: {symbol, date, large_holder_pct, total_holders}.
+    """
+    ds = target_date.strftime("%Y%m%d")
+    url = f"https://openapi.tdcc.com.tw/v1/opendata/1-5?date={ds}"
+
+    try:
+        resp = requests.get(url, headers=_HEADERS, timeout=120)
+        data = resp.json()
+
+        if not data or not isinstance(data, list):
+            return []
+
+        # Group by symbol
+        by_symbol: dict[str, list[dict]] = {}
+        for row in data:
+            code = str(row.get("證券代號", "")).strip()
+            if not code.isdigit() or len(code) != 4:
+                continue
+            by_symbol.setdefault(code, []).append(row)
+
+        results = []
+        for code, rows in by_symbol.items():
+            total_shares = 0
+            large_shares = 0
+            total_holders = 0
+
+            for r in rows:
+                level = str(r.get("持股分級", "")).strip()
+                shares = _parse_tw_int_safe(str(r.get("股數", "0")))
+                holders = _parse_tw_int_safe(str(r.get("人數", "0")))
+
+                if level == _TDCC_TOTAL_LEVEL:
+                    total_shares = shares or 0
+                    total_holders = holders or 0
+                elif level in _TDCC_LARGE_HOLDER_LEVELS:
+                    large_shares += (shares or 0)
+
+            if total_shares == 0:
+                continue
+
+            results.append({
+                "symbol": f"{code}.TW",
+                "date": target_date.isoformat(),
+                "large_holder_pct": round(large_shares / total_shares * 100, 2),
+                "total_holders": total_holders,
+            })
+
+        logger.info("TDCC shareholder: %d stocks for %s", len(results), target_date)
+        return results
+
+    except Exception as e:
+        logger.error("TDCC fetch failed for %s: %s", target_date, e)
+        return []
+
+
+# ── Number parsing helpers ───────────────────────────────────────────────────
+
+def _parse_tw_int(val) -> int | None:
+    """Parse a TW-format integer (with commas, +/- signs)."""
+    n = _parse_tw_number(val)
+    return int(n) if n is not None else None
+
+
+def _parse_tw_int_safe(val) -> int | None:
+    """Parse integer, returning None on failure."""
+    try:
+        cleaned = str(val).replace(",", "").replace(" ", "").strip()
+        if not cleaned or cleaned in ("--", "-", "N/A"):
+            return None
+        return int(float(cleaned))
+    except (ValueError, TypeError):
+        return None
+
+
 # ── Multi-day factor calculation ──────────────────────────────────────────────
 
 def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None) -> dict:
-    """
-    Compute factors that require historical data:
-      - momentum_5d, momentum_20d
-      - ma5/10/20/60, ma_trend (4-state alignment classification)
-      - volume_ratio (today / 20d avg)
-      - volatility_20d (std of change_pct)
-      - kd (latest K value → absolute score)
-      - obv (5-day trend vs price slope → absolute score)
+    """Compute price-based screener factors from OHLCV history (v5.0).
 
-    If *history* is provided (newest-first list[dict]), it is used directly
-    instead of querying the DB.  The backtester uses this to feed pre-loaded
-    in-memory data, avoiding per-stock DB round-trips.
+    Factors: kd, pe_percentile, breakout, squeeze_volume,
+             bb_squeeze, volume_breakout, box_breakout, avwap_dev,
+             liquidity_sweep, ma200, avg_vol_5d.
     """
     if history is None:
-        # Extended to 65 days to support MA60 + KD warm-up.
-        history = tw_db.get_history(symbol, days=65)
+        history = tw_db.get_history(symbol, days=200)
     if len(history) < 2:
         return {}
 
-    # history is newest first; reverse for chronological
     history = list(reversed(history))
     closes  = [h["close"]  for h in history if h["close"]  is not None]
     volumes = [h["volume"] for h in history if h["volume"] is not None]
     changes = [h["change_pct"] for h in history if h["change_pct"] is not None]
-    # Full OHLCV rows for KD/OBV (need aligned arrays)
     full_rows = [h for h in history if all(h.get(k) is not None for k in ("open", "high", "low", "close", "volume"))]
 
     result = {}
 
-    # Momentum
-    if len(closes) >= 6:
-        result["momentum_5d"] = round((closes[-1] / closes[-6] - 1) * 100, 2)
-    if len(closes) >= 21:
-        result["momentum_20d"] = round((closes[-1] / closes[-21] - 1) * 100, 2)
+    # ── MA200 (pre-filter, not a ranked factor) ──────────────────────────
+    if len(closes) >= 200:
+        result["ma200"] = sum(closes[-200:]) / 200
 
-    # Moving averages (5/10/20/60 — extended for 4-state alignment)
-    for w in (5, 10, 20, 60):
-        if len(closes) >= w:
-            result[f"ma{w}"] = round(sum(closes[-w:]) / w, 2)
-
-    # MA trend (4-state): tangled > bullish > bearish > neutral
-    ma_keys = ("ma5", "ma10", "ma20", "ma60")
-    if all(k in result for k in ma_keys):
-        ma_vals = [result[k] for k in ma_keys]
-        price = closes[-1]
-        mean = sum(ma_vals) / 4
-        spread = (max(ma_vals) - min(ma_vals)) / mean if mean else 1.0
-
-        if spread < MA_TANGLED_THRESHOLD:
-            status = "tangled"
-        elif price > ma_vals[0] > ma_vals[1] > ma_vals[2] > ma_vals[3]:
-            status = "bullish_alignment"
-        elif price < ma_vals[0] < ma_vals[1] < ma_vals[2] < ma_vals[3]:
-            status = "bearish_alignment"
-        else:
-            status = "neutral"
-        result["ma_status"] = status
-        result["ma_trend"] = MA_4STATE_SCORES[status]
-    elif "ma5" in result and "ma20" in result:
-        # Fallback for shorter history (legacy binary scoring)
-        price = closes[-1]
-        if price > result["ma5"] > result["ma20"]:
-            result["ma_trend"] = 100
-        elif price < result["ma5"] < result["ma20"]:
-            result["ma_trend"] = 0
-        else:
-            result["ma_trend"] = 50
-
-    # Volume ratio (latest / 20d avg, excluding latest)
-    if len(volumes) >= 21:
-        avg_vol = sum(volumes[-21:-1]) / 20
-        if avg_vol > 0:
-            result["volume_ratio"] = round(volumes[-1] / avg_vol, 2)
-
-    # 20-day volatility (std dev of change_pct)
-    if len(changes) >= 20:
-        recent = changes[-20:]
-        mean = sum(recent) / len(recent)
-        variance = sum((x - mean) ** 2 for x in recent) / len(recent)
-        result["volatility_20d"] = round(variance ** 0.5, 2)
-
-    # KD (latest K value, period=9) — requires OHL
+    # ── KD ────────────────────────────────────────────────────────────────
     if len(full_rows) >= 9:
         from .indicators import stochastic_kd
         kd = stochastic_kd(
@@ -626,30 +970,7 @@ def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None
             result["kd_value"] = k_vals[-1]
             result["kd"] = _lookup_factor_score(k_vals[-1], KD_FACTOR_SCORES, KD_FACTOR_DEFAULT)
 
-    # Candlestick pattern (B8) — bullish signals add, bearish overrides down
-    if len(full_rows) >= 3:
-        from .patterns import detect_patterns
-        patterns = detect_patterns(full_rows, lookback=PATTERN_FACTOR_LOOKBACK)
-        bullish_count = sum(1 for p in patterns if p["direction"] == "bullish")
-        bearish_count = sum(1 for p in patterns if p["direction"] == "bearish")
-        if bearish_count > 0:
-            result["pattern"] = PATTERN_FACTOR_BEARISH_OVERRIDE
-        else:
-            result["pattern"] = PATTERN_FACTOR_BULLISH_SCORES.get(
-                bullish_count, PATTERN_FACTOR_BULLISH_DEFAULT
-            )
-        result["pattern_count"] = {"bullish": bullish_count, "bearish": bearish_count}
-
-    # Yield stability (B9) — std dev of yield_pct over recent days (lower = more stable)
-    yields = [h.get("yield_pct") for h in history if h.get("yield_pct") is not None]
-    if len(yields) >= 10:
-        recent = yields[-YIELD_STABILITY_LOOKBACK:] if len(yields) > YIELD_STABILITY_LOOKBACK else yields
-        if recent:
-            avg = sum(recent) / len(recent)
-            variance = sum((x - avg) ** 2 for x in recent) / len(recent)
-            result["yield_stability"] = round(variance ** 0.5, 4)
-
-    # PE 60-day percentile (B9) — current PE rank within own 60d history
+    # ── PE 60-day percentile ─────────────────────────────────────────────
     pes = [h.get("pe") for h in history if h.get("pe") is not None and h.get("pe") > 0]
     if len(pes) >= 10:
         recent_pes = pes[-PE_PERCENTILE_LOOKBACK:] if len(pes) > PE_PERCENTILE_LOOKBACK else pes
@@ -658,29 +979,178 @@ def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None
         below = sum(1 for x in sorted_pes if x < current_pe)
         result["pe_percentile"] = round(below / len(sorted_pes) * 100, 1)
 
-    # OBV trend — compare 5-day OBV slope vs price slope
-    if len(full_rows) >= OBV_FACTOR_LOOKBACK + 1:
-        from .indicators import obv as compute_obv
-        obv_series = compute_obv(
-            [r["close"]  for r in full_rows],
-            [r["volume"] for r in full_rows],
-        )
-        valid_obv = [v for v in obv_series if v is not None]
-        if len(valid_obv) >= OBV_FACTOR_LOOKBACK + 1:
-            price_change = full_rows[-1]["close"] - full_rows[-OBV_FACTOR_LOOKBACK - 1]["close"]
-            obv_change = valid_obv[-1] - valid_obv[-OBV_FACTOR_LOOKBACK - 1]
-            if price_change > 0 and obv_change > 0:
-                trend = "rising"
-            elif price_change < 0 and obv_change < 0:
-                trend = "falling"
-            elif price_change > 0 and obv_change < 0:
-                trend = "divergence_bear"
-            elif price_change < 0 and obv_change > 0:
-                trend = "divergence_bull"
-            else:
-                trend = "neutral"
-            result["obv_trend"] = trend
-            result["obv"] = OBV_FACTOR_SCORES[trend]
+    # ── Breakout: (close - 20d high) / 20d high × 100 ───────────────────
+    if len(closes) >= 20:
+        high_20d = max(closes[-20:])
+        if high_20d > 0:
+            result["breakout"] = round((closes[-1] - high_20d) / high_20d * 100, 2)
+
+    # ── Squeeze & Volume ─────────────────────────────────────────────────
+    avg_vol_20 = 0.0
+    if len(changes) >= 20 and len(volumes) >= 21:
+        recent_20 = changes[-20:]
+        recent_5 = changes[-5:]
+        mean_20 = sum(recent_20) / len(recent_20)
+        mean_5 = sum(recent_5) / len(recent_5)
+        std_20 = (sum((x - mean_20) ** 2 for x in recent_20) / len(recent_20)) ** 0.5
+        std_5 = (sum((x - mean_5) ** 2 for x in recent_5) / len(recent_5)) ** 0.5
+
+        avg_vol_20 = sum(volumes[-21:-1]) / 20
+        vol_ratio = volumes[-1] / avg_vol_20 if avg_vol_20 > 0 else 1.0
+
+        squeeze = max(0, (std_20 - std_5) / std_20) if std_20 > 0 else 0.0
+        result["squeeze_volume"] = round(squeeze * vol_ratio, 4)
+
+    # ── Volume Breakout: today_vol / avg_vol_20d ─────────────────────────
+    if len(volumes) >= 21:
+        if avg_vol_20 == 0.0:
+            avg_vol_20 = sum(volumes[-21:-1]) / 20
+        if avg_vol_20 > 0:
+            result["volume_breakout"] = round(volumes[-1] / avg_vol_20, 4)
+
+    # ── Avg Vol 5d (helper for inst_volume_ratio) ────────────────────────
+    if len(volumes) >= 5:
+        result["avg_vol_5d"] = sum(volumes[-5:]) / 5
+
+    # ── BB Squeeze: bandwidth percentile within 120-day window ───────────
+    if len(closes) >= 20:
+        from .indicators import bollinger_bands
+        bb = bollinger_bands(closes, period=20, num_std=2.0)
+        bandwidths = [
+            (u - l) / m
+            for u, m, l in zip(bb["upper"], bb["middle"], bb["lower"])
+            if u is not None and m is not None and m > 0
+        ]
+        if bandwidths:
+            lookback = bandwidths[-120:]
+            current_bw = bandwidths[-1]
+            below = sum(1 for x in lookback if x < current_bw)
+            result["bb_squeeze"] = round(below / len(lookback) * 100, 1)
+
+    # ── Box Breakout: break above 60-day consolidation range ─────────────
+    if len(full_rows) >= 60:
+        highs_60 = [r["high"] for r in full_rows[-60:]]
+        lows_60 = [r["low"] for r in full_rows[-60:]]
+        box_high = max(highs_60)
+        box_low = min(lows_60)
+        current_close = full_rows[-1]["close"]
+        box_range_pct = (box_high - box_low) / current_close * 100 if current_close > 0 else 999
+        if current_close >= box_high and box_range_pct > 0:
+            result["box_breakout"] = round(100 / max(box_range_pct, 1), 2)
+        else:
+            result["box_breakout"] = 0.0
+
+    # ── AVWAP Deviation: anchored to 60-day swing low ────────────────────
+    if len(full_rows) >= 20:
+        lookback = min(60, len(full_rows))
+        recent = full_rows[-lookback:]
+        swing_low_idx = min(range(len(recent)), key=lambda i: recent[i]["low"])
+        anchor_slice = recent[swing_low_idx:]
+        if len(anchor_slice) >= 2:
+            cum_tp_vol = 0.0
+            cum_vol = 0.0
+            for r in anchor_slice:
+                tp = (r["high"] + r["low"] + r["close"]) / 3
+                cum_tp_vol += tp * r["volume"]
+                cum_vol += r["volume"]
+            if cum_vol > 0:
+                avwap = cum_tp_vol / cum_vol
+                result["avwap_dev"] = round((closes[-1] - avwap) / avwap * 100, 4)
+
+    # ── Liquidity Sweep: wick below recent lows + close reclaim ──────────
+    if len(full_rows) >= 6:
+        today = full_rows[-1]
+        preceding_lows = [r["low"] for r in full_rows[-6:-1]]
+        min_preceding = min(preceding_lows)
+        if today["low"] < min_preceding and today["close"] > min_preceding:
+            result["liquidity_sweep"] = round(
+                (today["close"] - today["low"]) / today["close"] * 100, 4
+            )
+        else:
+            result["liquidity_sweep"] = 0.0
+
+    return result
+
+
+def _count_streak(records: list[dict], field: str) -> int:
+    """Count consecutive positive/negative days for a field (newest-first)."""
+    streak = 0
+    for r in records:
+        val = r.get(field, 0) or 0
+        if val > 0 and streak >= 0:
+            streak += 1
+        elif val < 0 and streak <= 0:
+            streak -= 1
+        else:
+            break
+    return streak
+
+
+def _compute_extended_factors(
+    symbol: str,
+    signal_date: str,
+    *,
+    inst_data: dict | None = None,
+    revenue_data: dict | None = None,
+    shareholder_data: dict | None = None,
+) -> dict:
+    """Compute factors from institutional / revenue / shareholder data (v5.0).
+
+    Factors: foreign_net_5d, trust_net_5d, foreign_streak, trust_streak,
+             large_holder_change, revenue_yoy.
+    """
+    result = {}
+
+    # ── Chipflow: foreign_net_5d / trust_net_5d ──────────────────────────
+    if inst_data is not None:
+        sym_inst = inst_data.get(symbol, {})
+        dates_5 = sorted(d for d in sym_inst if d <= signal_date)[-5:]
+        if dates_5:
+            result["foreign_net_5d"] = sum(sym_inst[d].get("foreign_net", 0) for d in dates_5)
+            result["trust_net_5d"] = sum(sym_inst[d].get("trust_net", 0) for d in dates_5)
+        # Streaks need up to 20 days
+        dates_20 = sorted(d for d in sym_inst if d <= signal_date)[-20:]
+        if dates_20:
+            streak_records = [sym_inst[d] for d in reversed(dates_20)]
+            result["foreign_streak"] = _count_streak(streak_records, "foreign_net")
+            result["trust_streak"] = _count_streak(streak_records, "trust_net")
+    else:
+        rows = tw_db.get_institutional_history(symbol, before_date=signal_date, days=20)
+        if rows:
+            rows_5 = rows[:5]
+            result["foreign_net_5d"] = sum(r["foreign_net"] or 0 for r in rows_5)
+            result["trust_net_5d"] = sum(r["trust_net"] or 0 for r in rows_5)
+            result["foreign_streak"] = _count_streak(rows, "foreign_net")
+            result["trust_streak"] = _count_streak(rows, "trust_net")
+
+    # ── Chipflow: large_holder_change ────────────────────────────────────
+    if shareholder_data is not None:
+        sym_sh = shareholder_data.get(symbol, {})
+        dates = sorted(d for d in sym_sh if d <= signal_date)[-2:]
+        if len(dates) >= 2:
+            result["large_holder_change"] = round(
+                sym_sh[dates[-1]]["large_holder_pct"] - sym_sh[dates[-2]]["large_holder_pct"], 4
+            )
+        elif len(dates) == 1:
+            result["large_holder_change"] = 0.0
+    else:
+        rows = tw_db.get_shareholder_history(symbol, before_date=signal_date, n=2)
+        if len(rows) >= 2:
+            result["large_holder_change"] = round(
+                rows[0]["large_holder_pct"] - rows[1]["large_holder_pct"], 4
+            )
+        elif len(rows) == 1:
+            result["large_holder_change"] = 0.0
+
+    # ── Fundamentals: revenue_yoy ────────────────────────────────────────
+    if revenue_data is not None:
+        sym_rev = revenue_data.get(symbol, [])
+        if sym_rev:
+            result["revenue_yoy"] = sym_rev[-1].get("revenue_yoy")
+    else:
+        rows = tw_db.get_latest_revenue(symbol, n=1)
+        if rows:
+            result["revenue_yoy"] = rows[0].get("revenue_yoy")
 
     return result
 
@@ -699,22 +1169,31 @@ def _rank_stocks_with_history(
     snapshot: list[dict],
     *,
     histories: dict[str, list[dict]] | None = None,
+    inst_data: dict | None = None,
+    revenue_data: dict | None = None,
+    shareholder_data: dict | None = None,
     result_limit: int | None = None,
+    return_all: bool = False,
 ) -> list[dict]:
-    """Rank stocks by 13-factor composite score.
+    """Rank stocks by 16-factor composite score (v5.0).
 
     Parameters
     ----------
-    histories : optional dict mapping symbol → newest-first price list.
-        When provided, used instead of per-stock DB queries (backtester path).
+    histories : optional {symbol: newest-first price list} (backtester path).
+    inst_data : optional {symbol: {date: {foreign_net, trust_net, ...}}}.
+    revenue_data : optional {symbol: [{year_month, revenue_yoy, ...}]}.
+    shareholder_data : optional {symbol: {date: {large_holder_pct}}}.
     result_limit : optional int to override SCREENER_CONFIG["top_n"].
+    return_all : if True, return ALL eligible stocks (for IC analysis).
     """
     min_vol = SCREENER_CONFIG["min_volume"]
     eligible = [s for s in snapshot if s.get("volume", 0) >= min_vol]
     if not eligible:
         return []
 
-    # Enrich each stock with multi-day factors
+    signal_date = eligible[0].get("date", "")
+
+    # Enrich each stock with price-based factors
     for s in eligible:
         sym = s["symbol"]
         if histories and sym in histories:
@@ -722,46 +1201,82 @@ def _rank_stocks_with_history(
         else:
             s.update(_compute_multi_day_factors(sym))
 
+    # MA200 pre-filter: exclude stocks trading below 200-day MA
+    eligible = [
+        s for s in eligible
+        if s.get("ma200") is None or s.get("close", 0) >= s["ma200"]
+    ]
+    if not eligible:
+        return []
+
+    # Enrich with extended factors (chipflow + fundamentals)
+    for s in eligible:
+        s.update(_compute_extended_factors(
+            s["symbol"],
+            signal_date,
+            inst_data=inst_data,
+            revenue_data=revenue_data,
+            shareholder_data=shareholder_data,
+        ))
+
+    # Compute inst_volume_ratio (needs both multi-day and extended data)
+    for s in eligible:
+        avg_vol = s.get("avg_vol_5d")
+        fnet = abs(s.get("foreign_net_5d", 0) or 0)
+        tnet = abs(s.get("trust_net_5d", 0) or 0)
+        if avg_vol and avg_vol > 0:
+            s["inst_volume_ratio"] = round((fnet + tnet) / (avg_vol * 5) * 100, 4)
+
     w = SCREENER_CONFIG["weights"]
 
-    # Assign percentile ranks
-    _assign_percentile(eligible, "momentum_5d", "_rank_m5", reverse=False)
-    _assign_percentile(eligible, "momentum_20d", "_rank_m20", reverse=False)
-    _assign_percentile(eligible, "pe", "_rank_value", reverse=True)
-    _assign_percentile(eligible, "pb", "_rank_pb", reverse=True)
-    _assign_percentile(eligible, "yield_pct", "_rank_quality", reverse=False)
-    _assign_percentile(eligible, "volume_ratio", "_rank_volratio", reverse=False)
-    _assign_percentile(eligible, "ma_trend", "_rank_ma", reverse=False)
-    _assign_percentile(eligible, "volatility_20d", "_rank_lowvol", reverse=True)
-    _assign_percentile(eligible, "kd", "_rank_kd", reverse=False)
-    _assign_percentile(eligible, "obv", "_rank_obv", reverse=False)
-    _assign_percentile(eligible, "pattern", "_rank_pattern", reverse=False)
-    # B9: yield_stability is reverse (lower std → higher rank);
-    #     pe_percentile is reverse (lower percentile = currently cheaper than own history → higher rank)
-    _assign_percentile(eligible, "yield_stability", "_rank_ystab", reverse=True)
-    _assign_percentile(eligible, "pe_percentile", "_rank_pep", reverse=True)
+    # ── Percentile ranks ─────────────────────────────────────────────────
+    # Technical
+    _assign_percentile(eligible, "kd",              "_rank_kd",    reverse=False)
+    _assign_percentile(eligible, "breakout",        "_rank_bkout", reverse=False)
+    _assign_percentile(eligible, "squeeze_volume",  "_rank_sqvol", reverse=False)
+    _assign_percentile(eligible, "bb_squeeze",      "_rank_bbsq",  reverse=True)
+    _assign_percentile(eligible, "volume_breakout", "_rank_volbk", reverse=False)
+    _assign_percentile(eligible, "box_breakout",    "_rank_boxbk", reverse=False)
+    _assign_percentile(eligible, "avwap_dev",       "_rank_avwap", reverse=False)
+    _assign_percentile(eligible, "liquidity_sweep", "_rank_liqsw", reverse=False)
+    # Chipflow
+    _assign_percentile(eligible, "foreign_net_5d",    "_rank_fnet",  reverse=False)
+    _assign_percentile(eligible, "trust_net_5d",      "_rank_tnet",  reverse=False)
+    _assign_percentile(eligible, "inst_volume_ratio", "_rank_ivr",   reverse=False)
+    _assign_percentile(eligible, "large_holder_change","_rank_lhc",  reverse=False)
+    _assign_percentile(eligible, "foreign_streak",    "_rank_fstrk", reverse=False)
+    _assign_percentile(eligible, "trust_streak",      "_rank_tstrk", reverse=False)
+    # Fundamental
+    _assign_percentile(eligible, "pe_percentile", "_rank_pep",  reverse=True)
+    _assign_percentile(eligible, "revenue_yoy",   "_rank_ryoy", reverse=False)
 
-    # Composite score
+    # ── Composite score ──────────────────────────────────────────────────
     for s in eligible:
         s["score"] = round(
-            s.get("_rank_m5", 50)       * w["momentum_5d"]
-            + s.get("_rank_m20", 50)    * w["momentum_20d"]
-            + s.get("_rank_value", 50)  * w["value"]
-            + s.get("_rank_pb", 50)     * w["pb_value"]
-            + s.get("_rank_quality", 50)* w["quality"]
-            + s.get("_rank_volratio",50)* w["volume_ratio"]
-            + s.get("_rank_ma", 50)     * w["ma_trend"]
-            + s.get("_rank_lowvol", 50) * w["low_vol"]
-            + s.get("_rank_kd", 50)     * w["kd"]
-            + s.get("_rank_obv", 50)    * w["obv"]
-            + s.get("_rank_pattern", 50)* w["pattern"]
-            + s.get("_rank_ystab", 50)  * w["yield_stability"]
-            + s.get("_rank_pep", 50)    * w["pe_percentile"]
+            # Technical (40%)
+            s.get("_rank_kd", 50)    * w["kd"]
+            + s.get("_rank_bkout", 50) * w["breakout"]
+            + s.get("_rank_sqvol", 50) * w["squeeze_volume"]
+            + s.get("_rank_bbsq", 50)  * w["bb_squeeze"]
+            + s.get("_rank_volbk", 50) * w["volume_breakout"]
+            + s.get("_rank_boxbk", 50) * w["box_breakout"]
+            + s.get("_rank_avwap", 50) * w["avwap_dev"]
+            + s.get("_rank_liqsw", 50) * w["liquidity_sweep"]
+            # Chipflow (40%)
+            + s.get("_rank_fnet", 50)  * w["foreign_net_5d"]
+            + s.get("_rank_tnet", 50)  * w["trust_net_5d"]
+            + s.get("_rank_ivr", 50)   * w["inst_volume_ratio"]
+            + s.get("_rank_lhc", 50)   * w["large_holder_change"]
+            + s.get("_rank_fstrk", 50) * w["foreign_streak"]
+            + s.get("_rank_tstrk", 50) * w["trust_streak"]
+            # Fundamental (20%)
+            + s.get("_rank_pep", 50)   * w["pe_percentile"]
+            + s.get("_rank_ryoy", 50)  * w["revenue_yoy"]
         )
 
     eligible.sort(key=lambda s: s["score"], reverse=True)
 
-    limit = result_limit or SCREENER_CONFIG["top_n"]
+    limit = len(eligible) if return_all else (result_limit or SCREENER_CONFIG["top_n"])
     result = []
     for rank, s in enumerate(eligible[:limit], 1):
         result.append({
@@ -775,19 +1290,22 @@ def _rank_stocks_with_history(
             "yield_pct": s.get("yield_pct"),
             "volume": s.get("volume", 0),
             "factors": {
-                "momentum_5d":  s.get("_rank_m5", 0),
-                "momentum_20d": s.get("_rank_m20", 0),
-                "value":        s.get("_rank_value", 0),
-                "pb_value":     s.get("_rank_pb", 0),
-                "quality":      s.get("_rank_quality", 0),
-                "volume_ratio": s.get("_rank_volratio", 0),
-                "ma_trend":     s.get("_rank_ma", 0),
-                "low_vol":      s.get("_rank_lowvol", 0),
-                "kd":               s.get("_rank_kd", 0),
-                "obv":              s.get("_rank_obv", 0),
-                "pattern":          s.get("_rank_pattern", 0),
-                "yield_stability":  s.get("_rank_ystab", 0),
-                "pe_percentile":    s.get("_rank_pep", 0),
+                "kd":                   s.get("_rank_kd", 0),
+                "breakout":             s.get("_rank_bkout", 0),
+                "squeeze_volume":       s.get("_rank_sqvol", 0),
+                "bb_squeeze":           s.get("_rank_bbsq", 0),
+                "volume_breakout":      s.get("_rank_volbk", 0),
+                "box_breakout":         s.get("_rank_boxbk", 0),
+                "avwap_dev":            s.get("_rank_avwap", 0),
+                "liquidity_sweep":      s.get("_rank_liqsw", 0),
+                "foreign_net_5d":       s.get("_rank_fnet", 0),
+                "trust_net_5d":         s.get("_rank_tnet", 0),
+                "inst_volume_ratio":    s.get("_rank_ivr", 0),
+                "large_holder_change":  s.get("_rank_lhc", 0),
+                "foreign_streak":       s.get("_rank_fstrk", 0),
+                "trust_streak":         s.get("_rank_tstrk", 0),
+                "pe_percentile":        s.get("_rank_pep", 0),
+                "revenue_yoy":          s.get("_rank_ryoy", 0),
             },
         })
     return result
@@ -797,6 +1315,11 @@ def run_screener_with_data(
     snapshot: list[dict],
     histories: dict[str, list[dict]],
     top_n: int | None = None,
+    return_all: bool = False,
+    *,
+    inst_data: dict | None = None,
+    revenue_data: dict | None = None,
+    shareholder_data: dict | None = None,
 ) -> list[dict]:
     """Run screener ranking with pre-loaded data.
 
@@ -808,9 +1331,15 @@ def run_screener_with_data(
     snapshot : list of stock dicts (OHLCV + company info) for a specific date.
     histories : {symbol: newest-first price list} for factor computation.
     top_n : override default result limit (SCREENER_CONFIG["top_n"]).
+    return_all : if True, return ALL eligible stocks (for IC analysis).
+    inst_data : {symbol: {date: {foreign_net, trust_net, ...}}} — bulk loaded.
+    revenue_data : {symbol: [{year_month, revenue_yoy, ...}]} — bulk loaded.
+    shareholder_data : {symbol: {date: {large_holder_pct}}} — bulk loaded.
     """
     return _rank_stocks_with_history(
-        snapshot, histories=histories, result_limit=top_n,
+        snapshot, histories=histories, result_limit=top_n, return_all=return_all,
+        inst_data=inst_data, revenue_data=revenue_data,
+        shareholder_data=shareholder_data,
     )
 
 

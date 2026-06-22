@@ -76,9 +76,46 @@ def init_db() -> None:
                     PRIMARY KEY (symbol, date)
                 );
 
+                CREATE TABLE IF NOT EXISTS institutional_trading (
+                    symbol          TEXT NOT NULL,
+                    date            TEXT NOT NULL,
+                    foreign_buy     INTEGER,
+                    foreign_sell    INTEGER,
+                    foreign_net     INTEGER,
+                    trust_buy       INTEGER,
+                    trust_sell      INTEGER,
+                    trust_net       INTEGER,
+                    dealer_net      INTEGER,
+                    total_net       INTEGER,
+                    PRIMARY KEY (symbol, date)
+                );
+
+                CREATE TABLE IF NOT EXISTS monthly_revenue (
+                    symbol              TEXT NOT NULL,
+                    year_month          TEXT NOT NULL,
+                    revenue             INTEGER,
+                    revenue_yoy         REAL,
+                    revenue_mom         REAL,
+                    cumulative_revenue  INTEGER,
+                    cumulative_yoy      REAL,
+                    PRIMARY KEY (symbol, year_month)
+                );
+
+                CREATE TABLE IF NOT EXISTS shareholder_concentration (
+                    symbol          TEXT NOT NULL,
+                    date            TEXT NOT NULL,
+                    large_holder_pct REAL,
+                    total_holders   INTEGER,
+                    PRIMARY KEY (symbol, date)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_prices(date);
                 CREATE INDEX IF NOT EXISTS idx_daily_symbol ON daily_prices(symbol);
                 CREATE INDEX IF NOT EXISTS idx_companies_industry ON companies(industry);
+                CREATE INDEX IF NOT EXISTS idx_inst_date ON institutional_trading(date);
+                CREATE INDEX IF NOT EXISTS idx_inst_symbol ON institutional_trading(symbol);
+                CREATE INDEX IF NOT EXISTS idx_revenue_symbol ON monthly_revenue(symbol);
+                CREATE INDEX IF NOT EXISTS idx_shareholder_date ON shareholder_concentration(date);
             """)
             _migrate_add_ohl_columns(conn)
         _initialized = True
@@ -281,6 +318,218 @@ def prune_older_than(cutoff_date: str) -> int:
             "DELETE FROM daily_prices WHERE date < ?", (cutoff_date,)
         )
     return cursor.rowcount
+
+
+# ── Institutional trading operations ─────────────────────────────────────────
+
+def upsert_institutional_trading(records: Iterable[dict]) -> int:
+    """Insert or update institutional trading records.
+
+    Each dict must have: symbol, date.
+    Optional: foreign_buy, foreign_sell, foreign_net,
+              trust_buy, trust_sell, trust_net, dealer_net, total_net.
+    """
+    init_db()
+    rows = [
+        (
+            r["symbol"], r["date"],
+            r.get("foreign_buy"), r.get("foreign_sell"), r.get("foreign_net"),
+            r.get("trust_buy"), r.get("trust_sell"), r.get("trust_net"),
+            r.get("dealer_net"), r.get("total_net"),
+        )
+        for r in records if r.get("symbol") and r.get("date")
+    ]
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany("""
+            INSERT INTO institutional_trading
+                (symbol, date, foreign_buy, foreign_sell, foreign_net,
+                 trust_buy, trust_sell, trust_net, dealer_net, total_net)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, date) DO UPDATE SET
+                foreign_buy  = excluded.foreign_buy,
+                foreign_sell = excluded.foreign_sell,
+                foreign_net  = excluded.foreign_net,
+                trust_buy    = excluded.trust_buy,
+                trust_sell   = excluded.trust_sell,
+                trust_net    = excluded.trust_net,
+                dealer_net   = excluded.dealer_net,
+                total_net    = excluded.total_net
+        """, rows)
+    return len(rows)
+
+
+def get_institutional_dates() -> set[str]:
+    """Return set of dates that already have institutional data."""
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT date FROM institutional_trading"
+        ).fetchall()
+    return {r["date"] for r in rows}
+
+
+def get_institutional_history(symbol: str, before_date: str, days: int = 20) -> list[dict]:
+    """Return recent institutional trading for a symbol, newest first."""
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT date, foreign_net, trust_net, dealer_net, total_net
+            FROM institutional_trading
+            WHERE symbol = ? AND date <= ?
+            ORDER BY date DESC
+            LIMIT ?
+        """, (symbol, before_date, days)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_institutional_trading() -> list[dict]:
+    """Return ALL institutional trading records for bulk loading."""
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT symbol, date, foreign_net, trust_net, dealer_net, total_net
+            FROM institutional_trading
+            ORDER BY symbol, date
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Monthly revenue operations ───────────────────────────────────────────────
+
+def upsert_monthly_revenue(records: Iterable[dict]) -> int:
+    """Insert or update monthly revenue records.
+
+    Each dict must have: symbol, year_month.
+    Optional: revenue, revenue_yoy, revenue_mom,
+              cumulative_revenue, cumulative_yoy.
+    """
+    init_db()
+    rows = [
+        (
+            r["symbol"], r["year_month"],
+            r.get("revenue"), r.get("revenue_yoy"), r.get("revenue_mom"),
+            r.get("cumulative_revenue"), r.get("cumulative_yoy"),
+        )
+        for r in records if r.get("symbol") and r.get("year_month")
+    ]
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany("""
+            INSERT INTO monthly_revenue
+                (symbol, year_month, revenue, revenue_yoy, revenue_mom,
+                 cumulative_revenue, cumulative_yoy)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, year_month) DO UPDATE SET
+                revenue            = excluded.revenue,
+                revenue_yoy        = excluded.revenue_yoy,
+                revenue_mom        = excluded.revenue_mom,
+                cumulative_revenue = excluded.cumulative_revenue,
+                cumulative_yoy     = excluded.cumulative_yoy
+        """, rows)
+    return len(rows)
+
+
+def get_revenue_months() -> set[str]:
+    """Return set of year_month values that already have revenue data."""
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT year_month FROM monthly_revenue"
+        ).fetchall()
+    return {r["year_month"] for r in rows}
+
+
+def get_latest_revenue(symbol: str, n: int = 3) -> list[dict]:
+    """Return latest N months of revenue for a symbol, newest first."""
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT year_month, revenue, revenue_yoy, revenue_mom,
+                   cumulative_revenue, cumulative_yoy
+            FROM monthly_revenue
+            WHERE symbol = ?
+            ORDER BY year_month DESC
+            LIMIT ?
+        """, (symbol, n)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_monthly_revenue() -> list[dict]:
+    """Return ALL monthly revenue records for bulk loading."""
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT symbol, year_month, revenue, revenue_yoy, revenue_mom
+            FROM monthly_revenue
+            ORDER BY symbol, year_month
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Shareholder concentration operations ─────────────────────────────────────
+
+def upsert_shareholder_concentration(records: Iterable[dict]) -> int:
+    """Insert or update shareholder concentration records.
+
+    Each dict must have: symbol, date, large_holder_pct.
+    Optional: total_holders.
+    """
+    init_db()
+    rows = [
+        (r["symbol"], r["date"], r.get("large_holder_pct"), r.get("total_holders"))
+        for r in records if r.get("symbol") and r.get("date")
+    ]
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany("""
+            INSERT INTO shareholder_concentration
+                (symbol, date, large_holder_pct, total_holders)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(symbol, date) DO UPDATE SET
+                large_holder_pct = excluded.large_holder_pct,
+                total_holders    = excluded.total_holders
+        """, rows)
+    return len(rows)
+
+
+def get_shareholder_dates() -> set[str]:
+    """Return set of dates that already have shareholder data."""
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT date FROM shareholder_concentration"
+        ).fetchall()
+    return {r["date"] for r in rows}
+
+
+def get_shareholder_history(symbol: str, before_date: str, n: int = 4) -> list[dict]:
+    """Return recent N weeks of shareholder concentration, newest first."""
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT date, large_holder_pct, total_holders
+            FROM shareholder_concentration
+            WHERE symbol = ? AND date <= ?
+            ORDER BY date DESC
+            LIMIT ?
+        """, (symbol, before_date, n)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_shareholder_concentration() -> list[dict]:
+    """Return ALL shareholder concentration records for bulk loading."""
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT symbol, date, large_holder_pct
+            FROM shareholder_concentration
+            ORDER BY symbol, date
+        """).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ── Backtest support queries ─────────────────────────────────────────────────
