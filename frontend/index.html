@@ -360,6 +360,8 @@
                   class="screener-tab text-xs px-3 py-1 rounded-md transition font-medium bg-slate-700 text-slate-200">篩選結果</button>
                 <button id="tab-backtest" onclick="switchScreenerTab('backtest')"
                   class="screener-tab text-xs px-3 py-1 rounded-md transition font-medium text-slate-500 hover:text-slate-300">回測分析</button>
+                <button id="tab-ml" onclick="switchScreenerTab('ml')"
+                  class="screener-tab text-xs px-3 py-1 rounded-md transition font-medium text-slate-500 hover:text-slate-300">ML 選股</button>
               </div>
             </div>
             <div class="flex items-center gap-3">
@@ -391,6 +393,13 @@
                 <button onclick="toggleBacktestSignals()" class="text-xs text-slate-500 hover:text-slate-300 transition">展開/收合</button>
               </div>
               <div id="backtest-signals" class="overflow-x-auto max-h-96 overflow-y-auto hidden"></div>
+            </div>
+          </div>
+
+          <!-- Tab: ML Predictions -->
+          <div id="panel-ml" class="hidden">
+            <div id="ml-content">
+              <div class="text-center text-slate-500 text-sm py-8">載入中…</div>
             </div>
           </div>
 

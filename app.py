@@ -339,6 +339,47 @@ async def get_batch_quotes(
     return {"quotes": list(results)}
 
 
+# ── ML model ─────────────────────────────────────────────────────────────────
+@app.get("/api/ml/status")
+async def get_ml_status() -> dict:
+    try:
+        from stock_fetcher.ml_model import get_model_status
+        return await asyncio.to_thread(get_model_status)
+    except Exception as exc:
+        logger.exception("ML status error")
+        raise HTTPException(status_code=502, detail="ML status check failed") from exc
+
+
+@app.post("/api/ml/train")
+async def train_ml_model() -> dict:
+    try:
+        from stock_fetcher.ml_model import train_model
+        result = await asyncio.to_thread(train_model)
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("ML training error")
+        raise HTTPException(status_code=502, detail="ML training failed") from exc
+
+
+@app.get("/api/ml/predict")
+async def get_ml_predictions() -> dict:
+    try:
+        from stock_fetcher.ml_model import predict_today
+        result = await asyncio.to_thread(predict_today)
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("ML prediction error")
+        raise HTTPException(status_code=502, detail="ML prediction failed") from exc
+
+
 _frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
 if os.path.isdir(_frontend_dir):
     app.mount("/", StaticFiles(directory=_frontend_dir, html=True), name="frontend")

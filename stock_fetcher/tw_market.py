@@ -124,41 +124,38 @@ _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit
 API_DELAY_SECONDS = 0.5
 
 # ── Screener config ───────────────────────────────────────────────────────────
-# v5.0: 14-factor model. Tech 40% / Chip 40% / Fund 20%.
-# Added MA200 pre-filter, BB squeeze, volume breakout, box breakout,
-# AVWAP deviation, liquidity sweep, inst volume ratio, foreign/trust streaks.
-# Removed revenue_acceleration (insufficient data) and ma_convergence (overlap).
+# v7.0: 15-factor model. Tech 50% / Chip 35% / Fund 15%.
+# Replaced KD absolute-score with kd_cross (golden cross detection).
+# Added tangled_ma (MA convergence). Replaced pe_percentile with revenue_mom.
 SCREENER_CONFIG = {
     "min_volume": 500,
     "top_n": 20,
     "weights": {
-        # 技術面 (technicals) — 40%
-        "kd":                   0.07,
-        "breakout":             0.06,
+        # 技術面 (technicals) — 50%
+        "bb_squeeze":           0.08,
+        "volume_breakout":      0.08,
+        "box_breakout":         0.07,
         "squeeze_volume":       0.06,
-        "bb_squeeze":           0.06,
-        "volume_breakout":      0.05,
-        "box_breakout":         0.05,
-        "avwap_dev":            0.03,
+        "avwap_dev":            0.05,
+        "breakout":             0.05,
+        "tangled_ma":           0.05,
+        "kd_cross":             0.04,
         "liquidity_sweep":      0.02,
-        # 籌碼面 (chipflow) — 40%
-        "foreign_net_5d":       0.10,
-        "trust_net_5d":         0.09,
-        "inst_volume_ratio":    0.07,
-        "large_holder_change":  0.06,
-        "foreign_streak":       0.05,
-        "trust_streak":         0.03,
-        # 基本面 (fundamentals) — 20%
-        "pe_percentile":        0.12,
-        "revenue_yoy":          0.08,
+        # 籌碼面 (chipflow) — 35%
+        "trust_net_5d":         0.10,
+        "inst_volume_ratio":    0.06,
+        "foreign_net_5d":       0.05,
+        "trust_streak":         0.05,
+        "large_holder_change":  0.05,
+        "foreign_streak":       0.04,
+        # 基本面 (fundamentals) — 15%
+        "revenue_yoy":          0.10,
+        "revenue_mom":          0.05,
     },
 }
 
 # Yield stability — coefficient of variation over 60d (lower = more stable)
 YIELD_STABILITY_LOOKBACK = 60
-
-# PE 60d percentile — current PE rank within own 60d distribution
-PE_PERCENTILE_LOOKBACK = 60
 
 # Pattern factor scoring (within screener)
 PATTERN_FACTOR_LOOKBACK = 10        # scan last 10 bars
@@ -169,17 +166,6 @@ PATTERN_FACTOR_BULLISH_SCORES = {
     2: 85,
 }
 PATTERN_FACTOR_BULLISH_DEFAULT = 95  # 3 or more
-
-# KD raw → absolute factor score (used before percentile ranking)
-KD_FACTOR_SCORES = [
-    (20,  95),  # oversold
-    (30,  80),
-    (50,  70),
-    (70,  50),
-    (80,  30),
-    (101, 10),  # severely overbought
-]
-KD_FACTOR_DEFAULT = 50
 
 # OBV trend (price vs OBV slope over OBV_FACTOR_LOOKBACK days) → score
 OBV_FACTOR_LOOKBACK = 5
@@ -934,11 +920,11 @@ def _parse_tw_int_safe(val) -> int | None:
 # ── Multi-day factor calculation ──────────────────────────────────────────────
 
 def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None) -> dict:
-    """Compute price-based screener factors from OHLCV history (v5.0).
+    """Compute price-based screener factors from OHLCV history (v7.0).
 
-    Factors: kd, pe_percentile, breakout, squeeze_volume,
-             bb_squeeze, volume_breakout, box_breakout, avwap_dev,
-             liquidity_sweep, ma200, avg_vol_5d.
+    Factors: kd_cross, breakout, squeeze_volume, bb_squeeze,
+             volume_breakout, box_breakout, avwap_dev, liquidity_sweep,
+             tangled_ma, ma200, avg_vol_5d.
     """
     if history is None:
         history = tw_db.get_history(symbol, days=200)
@@ -957,7 +943,7 @@ def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None
     if len(closes) >= 200:
         result["ma200"] = sum(closes[-200:]) / 200
 
-    # ── KD ────────────────────────────────────────────────────────────────
+    # ── KD Cross: golden cross near relative low → high score ──────────
     if len(full_rows) >= 9:
         from .indicators import stochastic_kd
         kd = stochastic_kd(
@@ -965,19 +951,23 @@ def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None
             [r["low"]  for r in full_rows],
             [r["close"] for r in full_rows],
         )
-        k_vals = [v for v in kd["k"] if v is not None]
-        if k_vals:
-            result["kd_value"] = k_vals[-1]
-            result["kd"] = _lookup_factor_score(k_vals[-1], KD_FACTOR_SCORES, KD_FACTOR_DEFAULT)
-
-    # ── PE 60-day percentile ─────────────────────────────────────────────
-    pes = [h.get("pe") for h in history if h.get("pe") is not None and h.get("pe") > 0]
-    if len(pes) >= 10:
-        recent_pes = pes[-PE_PERCENTILE_LOOKBACK:] if len(pes) > PE_PERCENTILE_LOOKBACK else pes
-        current_pe = recent_pes[-1]
-        sorted_pes = sorted(recent_pes)
-        below = sum(1 for x in sorted_pes if x < current_pe)
-        result["pe_percentile"] = round(below / len(sorted_pes) * 100, 1)
+        k_vals = kd["k"]
+        d_vals = kd["d"]
+        k_now = k_vals[-1] if k_vals and k_vals[-1] is not None else None
+        k_prev = k_vals[-2] if len(k_vals) >= 2 and k_vals[-2] is not None else None
+        d_now = d_vals[-1] if d_vals and d_vals[-1] is not None else None
+        d_prev = d_vals[-2] if len(d_vals) >= 2 and d_vals[-2] is not None else None
+        if all(v is not None for v in (k_now, k_prev, d_now, d_prev)):
+            has_cross = k_prev < d_prev and k_now >= d_now
+            if has_cross and k_now < 30:
+                result["kd_cross"] = 100
+            elif has_cross and k_now < 50:
+                result["kd_cross"] = 80
+            elif has_cross:
+                result["kd_cross"] = 50
+            else:
+                result["kd_cross"] = 0
+        result["kd_value"] = k_now
 
     # ── Breakout: (close - 20d high) / 20d high × 100 ───────────────────
     if len(closes) >= 20:
@@ -1069,6 +1059,18 @@ def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None
         else:
             result["liquidity_sweep"] = 0.0
 
+    # ── Tangled MA: MA5/10/20/60 spread — lower spread = more tangled ───
+    if len(closes) >= 60:
+        ma5 = sum(closes[-5:]) / 5
+        ma10 = sum(closes[-10:]) / 10
+        ma20 = sum(closes[-20:]) / 20
+        ma60 = sum(closes[-60:]) / 60
+        mas = [ma5, ma10, ma20, ma60]
+        ma_mean = sum(mas) / 4
+        if ma_mean > 0:
+            spread = (max(mas) - min(mas)) / ma_mean
+            result["tangled_ma"] = round(spread, 6)
+
     return result
 
 
@@ -1094,10 +1096,10 @@ def _compute_extended_factors(
     revenue_data: dict | None = None,
     shareholder_data: dict | None = None,
 ) -> dict:
-    """Compute factors from institutional / revenue / shareholder data (v5.0).
+    """Compute factors from institutional / revenue / shareholder data (v7.0).
 
     Factors: foreign_net_5d, trust_net_5d, foreign_streak, trust_streak,
-             large_holder_change, revenue_yoy.
+             large_holder_change, revenue_yoy, revenue_mom.
     """
     result = {}
 
@@ -1142,15 +1144,17 @@ def _compute_extended_factors(
         elif len(rows) == 1:
             result["large_holder_change"] = 0.0
 
-    # ── Fundamentals: revenue_yoy ────────────────────────────────────────
+    # ── Fundamentals: revenue_yoy, revenue_mom ─────────────────────────
     if revenue_data is not None:
         sym_rev = revenue_data.get(symbol, [])
         if sym_rev:
             result["revenue_yoy"] = sym_rev[-1].get("revenue_yoy")
+            result["revenue_mom"] = sym_rev[-1].get("revenue_mom")
     else:
         rows = tw_db.get_latest_revenue(symbol, n=1)
         if rows:
             result["revenue_yoy"] = rows[0].get("revenue_yoy")
+            result["revenue_mom"] = rows[0].get("revenue_mom")
 
     return result
 
@@ -1175,7 +1179,7 @@ def _rank_stocks_with_history(
     result_limit: int | None = None,
     return_all: bool = False,
 ) -> list[dict]:
-    """Rank stocks by 16-factor composite score (v5.0).
+    """Rank stocks by 15-factor composite score (v7.0).
 
     Parameters
     ----------
@@ -1230,48 +1234,50 @@ def _rank_stocks_with_history(
     w = SCREENER_CONFIG["weights"]
 
     # ── Percentile ranks ─────────────────────────────────────────────────
-    # Technical
-    _assign_percentile(eligible, "kd",              "_rank_kd",    reverse=False)
-    _assign_percentile(eligible, "breakout",        "_rank_bkout", reverse=False)
-    _assign_percentile(eligible, "squeeze_volume",  "_rank_sqvol", reverse=False)
+    # Technical (50%)
     _assign_percentile(eligible, "bb_squeeze",      "_rank_bbsq",  reverse=True)
     _assign_percentile(eligible, "volume_breakout", "_rank_volbk", reverse=False)
     _assign_percentile(eligible, "box_breakout",    "_rank_boxbk", reverse=False)
+    _assign_percentile(eligible, "squeeze_volume",  "_rank_sqvol", reverse=False)
     _assign_percentile(eligible, "avwap_dev",       "_rank_avwap", reverse=False)
+    _assign_percentile(eligible, "breakout",        "_rank_bkout", reverse=False)
+    _assign_percentile(eligible, "tangled_ma",      "_rank_tgma",  reverse=True)
+    _assign_percentile(eligible, "kd_cross",        "_rank_kdx",   reverse=False)
     _assign_percentile(eligible, "liquidity_sweep", "_rank_liqsw", reverse=False)
-    # Chipflow
-    _assign_percentile(eligible, "foreign_net_5d",    "_rank_fnet",  reverse=False)
+    # Chipflow (35%)
     _assign_percentile(eligible, "trust_net_5d",      "_rank_tnet",  reverse=False)
     _assign_percentile(eligible, "inst_volume_ratio", "_rank_ivr",   reverse=False)
+    _assign_percentile(eligible, "foreign_net_5d",    "_rank_fnet",  reverse=False)
+    _assign_percentile(eligible, "trust_streak",      "_rank_tstrk", reverse=False)
     _assign_percentile(eligible, "large_holder_change","_rank_lhc",  reverse=False)
     _assign_percentile(eligible, "foreign_streak",    "_rank_fstrk", reverse=False)
-    _assign_percentile(eligible, "trust_streak",      "_rank_tstrk", reverse=False)
-    # Fundamental
-    _assign_percentile(eligible, "pe_percentile", "_rank_pep",  reverse=True)
+    # Fundamental (15%)
     _assign_percentile(eligible, "revenue_yoy",   "_rank_ryoy", reverse=False)
+    _assign_percentile(eligible, "revenue_mom",   "_rank_rmom", reverse=False)
 
     # ── Composite score ──────────────────────────────────────────────────
     for s in eligible:
         s["score"] = round(
-            # Technical (40%)
-            s.get("_rank_kd", 50)    * w["kd"]
-            + s.get("_rank_bkout", 50) * w["breakout"]
-            + s.get("_rank_sqvol", 50) * w["squeeze_volume"]
-            + s.get("_rank_bbsq", 50)  * w["bb_squeeze"]
+            # Technical (50%)
+            s.get("_rank_bbsq", 50)  * w["bb_squeeze"]
             + s.get("_rank_volbk", 50) * w["volume_breakout"]
             + s.get("_rank_boxbk", 50) * w["box_breakout"]
+            + s.get("_rank_sqvol", 50) * w["squeeze_volume"]
             + s.get("_rank_avwap", 50) * w["avwap_dev"]
+            + s.get("_rank_bkout", 50) * w["breakout"]
+            + s.get("_rank_tgma", 50)  * w["tangled_ma"]
+            + s.get("_rank_kdx", 50)   * w["kd_cross"]
             + s.get("_rank_liqsw", 50) * w["liquidity_sweep"]
-            # Chipflow (40%)
-            + s.get("_rank_fnet", 50)  * w["foreign_net_5d"]
+            # Chipflow (35%)
             + s.get("_rank_tnet", 50)  * w["trust_net_5d"]
             + s.get("_rank_ivr", 50)   * w["inst_volume_ratio"]
+            + s.get("_rank_fnet", 50)  * w["foreign_net_5d"]
+            + s.get("_rank_tstrk", 50) * w["trust_streak"]
             + s.get("_rank_lhc", 50)   * w["large_holder_change"]
             + s.get("_rank_fstrk", 50) * w["foreign_streak"]
-            + s.get("_rank_tstrk", 50) * w["trust_streak"]
-            # Fundamental (20%)
-            + s.get("_rank_pep", 50)   * w["pe_percentile"]
+            # Fundamental (15%)
             + s.get("_rank_ryoy", 50)  * w["revenue_yoy"]
+            + s.get("_rank_rmom", 50)  * w["revenue_mom"]
         )
 
     eligible.sort(key=lambda s: s["score"], reverse=True)
@@ -1290,22 +1296,23 @@ def _rank_stocks_with_history(
             "yield_pct": s.get("yield_pct"),
             "volume": s.get("volume", 0),
             "factors": {
-                "kd":                   s.get("_rank_kd", 0),
-                "breakout":             s.get("_rank_bkout", 0),
-                "squeeze_volume":       s.get("_rank_sqvol", 0),
                 "bb_squeeze":           s.get("_rank_bbsq", 0),
                 "volume_breakout":      s.get("_rank_volbk", 0),
                 "box_breakout":         s.get("_rank_boxbk", 0),
+                "squeeze_volume":       s.get("_rank_sqvol", 0),
                 "avwap_dev":            s.get("_rank_avwap", 0),
+                "breakout":             s.get("_rank_bkout", 0),
+                "tangled_ma":           s.get("_rank_tgma", 0),
+                "kd_cross":            s.get("_rank_kdx", 0),
                 "liquidity_sweep":      s.get("_rank_liqsw", 0),
-                "foreign_net_5d":       s.get("_rank_fnet", 0),
                 "trust_net_5d":         s.get("_rank_tnet", 0),
                 "inst_volume_ratio":    s.get("_rank_ivr", 0),
+                "foreign_net_5d":       s.get("_rank_fnet", 0),
+                "trust_streak":         s.get("_rank_tstrk", 0),
                 "large_holder_change":  s.get("_rank_lhc", 0),
                 "foreign_streak":       s.get("_rank_fstrk", 0),
-                "trust_streak":         s.get("_rank_tstrk", 0),
-                "pe_percentile":        s.get("_rank_pep", 0),
                 "revenue_yoy":          s.get("_rank_ryoy", 0),
+                "revenue_mom":          s.get("_rank_rmom", 0),
             },
         })
     return result

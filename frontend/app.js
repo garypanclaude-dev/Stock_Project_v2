@@ -175,6 +175,7 @@ document.getElementById('overlay-chips').addEventListener('click', e => {
 function toggleMock() {
   isMock = !isMock;
   backtestLoaded = false;  // force re-fetch on mode switch
+  mlLoaded = false;
   document.getElementById('toggle-track').className = `w-10 h-5 rounded-full transition-colors duration-200 ${isMock ? 'bg-amber-500' : 'bg-slate-600'}`;
   document.getElementById('toggle-dot').className = `absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${isMock ? 'translate-x-5' : 'translate-x-0'}`;
   document.getElementById('mock-badge').className = `text-xs font-semibold px-2.5 py-1 rounded-full border ${isMock ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' : 'bg-slate-700 text-slate-500 border-slate-600'}`;
@@ -1041,9 +1042,13 @@ function switchScreenerTab(tab) {
 
   document.getElementById('panel-screener').classList.toggle('hidden', tab !== 'screener');
   document.getElementById('panel-backtest').classList.toggle('hidden', tab !== 'backtest');
+  document.getElementById('panel-ml').classList.toggle('hidden', tab !== 'ml');
 
   if (tab === 'backtest' && !backtestLoaded) {
     loadBacktest();
+  }
+  if (tab === 'ml' && !mlLoaded) {
+    loadML();
   }
 }
 
@@ -1259,6 +1264,167 @@ function toggleBacktestSignals() {
 function fmtCap(n){if(!n)return'–';if(n>=1e12)return`$${(n/1e12).toFixed(2)}T`;if(n>=1e9)return`$${(n/1e9).toFixed(2)}B`;if(n>=1e6)return`$${(n/1e6).toFixed(0)}M`;return`$${n.toLocaleString()}`}
 function fmtVol(v){if(v>=1e6)return(v/1e6).toFixed(1)+'M';if(v>=1e3)return(v/1e3).toFixed(0)+'K';return String(v)}
 function escHtml(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+
+// ── ML Prediction tab ───────────────────────────────────────────────────────
+let mlLoaded = false;
+let mlTraining = false;
+
+async function loadML() {
+  const el = document.getElementById('ml-content');
+  el.innerHTML = '<div class="text-center text-slate-500 text-sm py-8">檢查模型狀態…</div>';
+
+  try {
+    const statusRes = await fetch('/api/ml/status');
+    if (!statusRes.ok) throw new Error('Status API error');
+    const status = await statusRes.json();
+
+    if (!status.trained) {
+      el.innerHTML = renderMLNoModel();
+      return;
+    }
+
+    el.innerHTML = '<div class="text-center text-slate-500 text-sm py-8">執行模型推論中…</div>';
+    const predRes = await fetch('/api/ml/predict');
+    if (!predRes.ok) {
+      const err = await predRes.json().catch(() => ({}));
+      throw new Error(err.detail || 'Predict API error');
+    }
+    const data = await predRes.json();
+    mlLoaded = true;
+    renderMLResults(data);
+  } catch (e) {
+    console.error('ML load failed:', e);
+    el.innerHTML = `<div class="text-center text-red-400 text-sm py-8">ML 載入失敗：${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderMLNoModel() {
+  return `
+    <div class="text-center py-12">
+      <div class="text-4xl mb-3">🤖</div>
+      <p class="text-slate-400 text-sm mb-4">尚未訓練 ML 模型</p>
+      <button onclick="trainML()" id="ml-train-btn"
+        class="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 px-4 py-2 rounded-lg font-semibold text-sm transition-colors">
+        開始訓練
+      </button>
+      <p class="text-xs text-slate-600 mt-3">訓練約需 1-3 分鐘，使用歷史資料建立 LightGBM 預測模型</p>
+    </div>`;
+}
+
+async function trainML() {
+  if (mlTraining) return;
+  mlTraining = true;
+
+  const el = document.getElementById('ml-content');
+  el.innerHTML = `
+    <div class="text-center py-12">
+      <div class="spin w-10 h-10 rounded-full border-4 border-blue-500 border-t-transparent mx-auto mb-4"></div>
+      <p class="text-slate-400 text-sm">模型訓練中，請稍候…</p>
+      <p class="text-xs text-slate-600 mt-1">正在計算所有股票的歷史因子並訓練 LightGBM</p>
+    </div>`;
+
+  try {
+    const res = await fetch('/api/ml/train', { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Training failed');
+    }
+    const result = await res.json();
+    mlTraining = false;
+    mlLoaded = false;
+    await loadML();
+  } catch (e) {
+    mlTraining = false;
+    console.error('ML training failed:', e);
+    el.innerHTML = `
+      <div class="text-center py-12">
+        <p class="text-red-400 text-sm mb-4">訓練失敗：${escHtml(e.message)}</p>
+        <button onclick="trainML()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg text-sm transition-colors">重試</button>
+      </div>`;
+  }
+}
+
+function renderMLResults(data) {
+  const el = document.getElementById('ml-content');
+  const info = data.model_info || {};
+  const picks = data.top_picks || [];
+
+  const infoHtml = `
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <div class="bg-slate-900/50 rounded-xl p-3 border border-slate-700 text-center">
+        <div class="text-xs text-slate-500 mb-1">訓練樣本</div>
+        <div class="text-lg font-bold tabular-nums">${(info.total_samples||0).toLocaleString()}</div>
+      </div>
+      <div class="bg-slate-900/50 rounded-xl p-3 border border-slate-700 text-center">
+        <div class="text-xs text-slate-500 mb-1">正樣本比例</div>
+        <div class="text-lg font-bold tabular-nums">${info.positive_rate||0}%</div>
+      </div>
+      <div class="bg-slate-900/50 rounded-xl p-3 border border-slate-700 text-center">
+        <div class="text-xs text-slate-500 mb-1">AUC (in-sample)</div>
+        <div class="text-lg font-bold tabular-nums">${info.auc_insample||0}</div>
+      </div>
+      <div class="bg-slate-900/50 rounded-xl p-3 border border-slate-700 text-center">
+        <div class="text-xs text-slate-500 mb-1">訓練區間</div>
+        <div class="text-xs font-mono text-slate-300">${info.train_period?.start?.slice(0,10)||'–'}<br/>${info.train_period?.end?.slice(0,10)||'–'}</div>
+      </div>
+    </div>`;
+
+  // Feature importance chart
+  const fi = (info.feature_importance || []).slice(0, 10);
+  const fiHtml = fi.length ? `
+    <div class="bg-slate-900/50 rounded-xl p-4 border border-slate-700 mb-4">
+      <h3 class="text-xs font-semibold text-slate-400 mb-3">特徵重要性 Top 10 (Gain)</h3>
+      <div class="space-y-1.5">
+        ${fi.map(([name, pct]) => `
+          <div class="flex items-center gap-2 text-xs">
+            <span class="w-32 text-slate-400 font-mono text-right shrink-0">${name}</span>
+            <div class="flex-1 bg-slate-800 rounded-full h-4 overflow-hidden">
+              <div class="h-full rounded-full bg-blue-500/70" style="width:${Math.min(pct / fi[0][1] * 100, 100)}%"></div>
+            </div>
+            <span class="w-12 text-right tabular-nums text-slate-300">${pct}%</span>
+          </div>`).join('')}
+      </div>
+    </div>` : '';
+
+  // Prediction table
+  const tableHtml = picks.length ? `
+    <div class="flex items-center justify-between mb-2">
+      <h3 class="text-xs font-semibold text-slate-400">預測排名 — 超額報酬機率 Top 30</h3>
+      <button onclick="trainML()" id="ml-retrain-btn" ${mlTraining?'disabled':''}
+        class="text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1 rounded-lg text-slate-300 transition">
+        重新訓練
+      </button>
+    </div>
+    <div class="overflow-x-auto">
+    <table class="w-full text-xs">
+      <thead><tr class="text-slate-500 border-b border-slate-700">
+        <th class="py-2 px-2 text-left font-medium w-10">#</th>
+        <th class="py-2 px-2 text-left font-medium">代號</th>
+        <th class="py-2 px-2 text-left font-medium">名稱</th>
+        <th class="py-2 px-2 text-right font-medium">ML 機率</th>
+        <th class="py-2 px-2 text-right font-medium">收盤價</th>
+        <th class="py-2 px-2 text-right font-medium">漲跌%</th>
+        <th class="py-2 px-2 text-right font-medium">成交量(張)</th>
+      </tr></thead>
+      <tbody>${picks.map((p, i) => {
+        const chgColor = p.change_pct >= 0 ? 'text-green-400' : 'text-red-400';
+        const probColor = p.probability >= 60 ? '#16a34a' : p.probability >= 40 ? '#22c55e' : p.probability >= 20 ? '#f59e0b' : '#94a3b8';
+        const sym = p.symbol.replace('.TW','');
+        return `<tr class="border-b border-slate-700/50 hover:bg-slate-700/30 cursor-pointer" onclick="switchToStock('${p.symbol}')">
+          <td class="py-2 px-2 text-slate-500">${i+1}</td>
+          <td class="py-2 px-2 font-mono font-bold text-slate-200">${sym}</td>
+          <td class="py-2 px-2 text-slate-300">${escHtml(p.name)}</td>
+          <td class="py-2 px-2 text-right font-bold tabular-nums" style="color:${probColor}">${p.probability}%</td>
+          <td class="py-2 px-2 text-right tabular-nums text-slate-200">$${p.close}</td>
+          <td class="py-2 px-2 text-right tabular-nums ${chgColor}">${p.change_pct>=0?'+':''}${p.change_pct}%</td>
+          <td class="py-2 px-2 text-right tabular-nums text-slate-400">${fmtVol(p.volume)}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>
+    </div>` : '<div class="text-slate-500 text-sm text-center py-6">無預測結果</div>';
+
+  el.innerHTML = infoHtml + fiHtml + tableHtml;
+}
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
