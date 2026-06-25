@@ -11,9 +11,14 @@ BENCHMARK_SYMBOL = "0050.TW"
 
 # ── 訓練參數 ──────────────────────────────────────────────────────────────
 WARM_UP_DAYS = 120                  # 篩選器暖機天數（與 backtest_config 一致）
-MIN_TRAIN_DAYS = 60                 # 最少訓練天數
+MIN_TRAIN_DAYS = 60                 # 最少訓練交易日數
 EXTREME_RETURN_CAP = 30.0           # 排除 |return| > 30% 的極端值（除權息/異常交易）
 MIN_VOLUME = 500                    # 最低成交量門檻（張）
+
+# ── Walk-Forward Expanding 參數 ──────────────────────────────────────────
+PURGE_GAP_DAYS = 5                  # 訓練/測試安全間隔（= FORWARD_DAYS，防止 label 洩漏）
+WF_FOLD_DAYS = 5                    # 每個測試 fold 的交易日數（= FORWARD_DAYS）
+WF_MIN_TRAIN_SAMPLES = 100          # 每個 fold 最少訓練樣本數
 
 # ── LightGBM 超參數 ──────────────────────────────────────────────────────
 LGBM_PARAMS = {
@@ -21,14 +26,14 @@ LGBM_PARAMS = {
     "metric": "auc",
     "verbosity": -1,
     "n_estimators": 300,
-    "learning_rate": 0.05,
-    "max_depth": 5,
-    "num_leaves": 31,
-    "min_child_samples": 50,
-    "subsample": 0.8,
-    "colsample_bytree": 0.8,
-    "reg_alpha": 0.1,
-    "reg_lambda": 1.0,
+    "learning_rate": 0.03,
+    "max_depth": 4,
+    "num_leaves": 15,
+    "min_child_samples": 100,
+    "subsample": 0.7,
+    "colsample_bytree": 0.7,
+    "reg_alpha": 0.5,
+    "reg_lambda": 3.0,
 }
 
 # ── 模型儲存路徑 ──────────────────────────────────────────────────────────
@@ -45,9 +50,12 @@ FEATURE_NAMES = [
     "box_breakout",
     "squeeze_volume",
     "avwap_dev",
-    "breakout",
+    "near_breakout",
+    "price_position",
     "tangled_ma",
     "liquidity_sweep",
+    "obv_divergence",
+    "volume_contraction",
     # 技術面 — KD 拆解為連續值
     "k_value",
     "d_value",
@@ -57,7 +65,6 @@ FEATURE_NAMES = [
     "inst_volume_ratio",
     "foreign_net_5d",
     "trust_streak",
-    "large_holder_change",
     "foreign_streak",
     # 基本面
     "revenue_yoy",

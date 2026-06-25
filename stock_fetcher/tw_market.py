@@ -124,7 +124,7 @@ _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit
 API_DELAY_SECONDS = 0.5
 
 # ── Screener config ───────────────────────────────────────────────────────────
-# v7.0: 15-factor model. Tech 50% / Chip 35% / Fund 15%.
+# v7.1: 14-factor model. Tech 50% / Chip 35% / Fund 15%.
 # Replaced KD absolute-score with kd_cross (golden cross detection).
 # Added tangled_ma (MA convergence). Replaced pe_percentile with revenue_mom.
 SCREENER_CONFIG = {
@@ -142,11 +142,10 @@ SCREENER_CONFIG = {
         "kd_cross":             0.04,
         "liquidity_sweep":      0.02,
         # 籌碼面 (chipflow) — 35%
-        "trust_net_5d":         0.10,
-        "inst_volume_ratio":    0.06,
-        "foreign_net_5d":       0.05,
-        "trust_streak":         0.05,
-        "large_holder_change":  0.05,
+        "trust_net_5d":         0.12,
+        "inst_volume_ratio":    0.07,
+        "foreign_net_5d":       0.06,
+        "trust_streak":         0.06,
         "foreign_streak":       0.04,
         # 基本面 (fundamentals) — 15%
         "revenue_yoy":          0.10,
@@ -841,9 +840,12 @@ def fetch_shareholder_distribution(target_date: date) -> list[dict]:
     """Fetch shareholder concentration for ALL stocks on a specific date.
 
     TDCC opendata returns all stocks in a single bulk response.
-    TDCC publishes weekly (Fridays). Non-publication dates return empty.
+    TDCC publishes weekly (Fridays). The API always returns the latest
+    available publication regardless of the date parameter, so we extract
+    the actual publication date from the response ``資料日期`` field.
 
     Returns list of dicts: {symbol, date, large_holder_pct, total_holders}.
+    The ``date`` value is the real TDCC publication date, not ``target_date``.
     """
     ds = target_date.strftime("%Y%m%d")
     url = f"https://openapi.tdcc.com.tw/v1/opendata/1-5?date={ds}"
@@ -854,6 +856,22 @@ def fetch_shareholder_distribution(target_date: date) -> list[dict]:
 
         if not data or not isinstance(data, list):
             return []
+
+        # Extract actual publication date from the first record.
+        # The field name has a BOM prefix (﻿資料日期) in TDCC responses.
+        raw_date_str = ""
+        for key in data[0]:
+            if "資料日期" in key:
+                raw_date_str = str(data[0][key]).strip()
+                break
+        if len(raw_date_str) == 8:
+            actual_date = date(
+                int(raw_date_str[:4]),
+                int(raw_date_str[4:6]),
+                int(raw_date_str[6:8]),
+            )
+        else:
+            actual_date = target_date
 
         # Group by symbol
         by_symbol: dict[str, list[dict]] = {}
@@ -885,12 +903,13 @@ def fetch_shareholder_distribution(target_date: date) -> list[dict]:
 
             results.append({
                 "symbol": f"{code}.TW",
-                "date": target_date.isoformat(),
+                "date": actual_date.isoformat(),
                 "large_holder_pct": round(large_shares / total_shares * 100, 2),
                 "total_holders": total_holders,
             })
 
-        logger.info("TDCC shareholder: %d stocks for %s", len(results), target_date)
+        logger.info("TDCC shareholder: %d stocks for %s (requested %s)",
+                     len(results), actual_date, target_date)
         return results
 
     except Exception as e:
@@ -974,6 +993,7 @@ def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None
         high_20d = max(closes[-20:])
         if high_20d > 0:
             result["breakout"] = round((closes[-1] - high_20d) / high_20d * 100, 2)
+            result["near_breakout"] = round(max(-5, min(result["breakout"], 3)), 2)
 
     # ── Squeeze & Volume ─────────────────────────────────────────────────
     avg_vol_20 = 0.0
@@ -998,6 +1018,13 @@ def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None
         if avg_vol_20 > 0:
             result["volume_breakout"] = round(volumes[-1] / avg_vol_20, 4)
 
+    # ── Volume Contraction: avg_vol_5d / avg_vol_20d ──────────────────────
+    if len(volumes) >= 21:
+        avg_v5 = sum(volumes[-5:]) / 5
+        avg_v20 = avg_vol_20 if avg_vol_20 > 0 else sum(volumes[-21:-1]) / 20
+        if avg_v20 > 0:
+            result["volume_contraction"] = round(avg_v5 / avg_v20, 4)
+
     # ── Avg Vol 5d (helper for inst_volume_ratio) ────────────────────────
     if len(volumes) >= 5:
         result["avg_vol_5d"] = sum(volumes[-5:]) / 5
@@ -1016,6 +1043,16 @@ def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None
             current_bw = bandwidths[-1]
             below = sum(1 for x in lookback if x < current_bw)
             result["bb_squeeze"] = round(below / len(lookback) * 100, 1)
+
+    # ── Price Position: normalized position within 60d high-low range ────
+    if len(full_rows) >= 60:
+        highs_60 = [r["high"] for r in full_rows[-60:]]
+        lows_60 = [r["low"] for r in full_rows[-60:]]
+        high_60d = max(highs_60)
+        low_60d = min(lows_60)
+        rng = high_60d - low_60d
+        if rng > 0:
+            result["price_position"] = round((closes[-1] - low_60d) / rng, 4)
 
     # ── Box Breakout: break above 60-day consolidation range ─────────────
     if len(full_rows) >= 60:
@@ -1071,6 +1108,38 @@ def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None
             spread = (max(mas) - min(mas)) / ma_mean
             result["tangled_ma"] = round(spread, 6)
 
+    # ── OBV Divergence: normalized OBV slope minus normalized price slope ─
+    if len(closes) >= 21 and len(volumes) >= 21 and len(full_rows) >= 21:
+        obv = [0.0]
+        for i in range(1, len(closes)):
+            if closes[i] > closes[i - 1]:
+                obv.append(obv[-1] + volumes[i])
+            elif closes[i] < closes[i - 1]:
+                obv.append(obv[-1] - volumes[i])
+            else:
+                obv.append(obv[-1])
+
+        obv_20 = obv[-20:]
+        price_20 = closes[-20:]
+
+        n = len(obv_20)
+        x_mean = (n - 1) / 2.0
+        x_var = sum((i - x_mean) ** 2 for i in range(n))
+
+        if x_var > 0:
+            obv_mean = sum(obv_20) / n
+            obv_slope = sum((i - x_mean) * (obv_20[i] - obv_mean) for i in range(n)) / x_var
+
+            price_mean = sum(price_20) / n
+            price_slope = sum((i - x_mean) * (price_20[i] - price_mean) for i in range(n)) / x_var
+
+            obv_std = (sum((v - obv_mean) ** 2 for v in obv_20) / n) ** 0.5
+            price_std = (sum((v - price_mean) ** 2 for v in price_20) / n) ** 0.5
+
+            norm_obv = obv_slope / obv_std if obv_std > 0 else 0.0
+            norm_price = price_slope / price_std if price_std > 0 else 0.0
+            result["obv_divergence"] = round(norm_obv - norm_price, 4)
+
     return result
 
 
@@ -1099,7 +1168,7 @@ def _compute_extended_factors(
     """Compute factors from institutional / revenue / shareholder data (v7.0).
 
     Factors: foreign_net_5d, trust_net_5d, foreign_streak, trust_streak,
-             large_holder_change, revenue_yoy, revenue_mom.
+             revenue_yoy, revenue_mom.
     """
     result = {}
 
@@ -1124,25 +1193,6 @@ def _compute_extended_factors(
             result["trust_net_5d"] = sum(r["trust_net"] or 0 for r in rows_5)
             result["foreign_streak"] = _count_streak(rows, "foreign_net")
             result["trust_streak"] = _count_streak(rows, "trust_net")
-
-    # ── Chipflow: large_holder_change ────────────────────────────────────
-    if shareholder_data is not None:
-        sym_sh = shareholder_data.get(symbol, {})
-        dates = sorted(d for d in sym_sh if d <= signal_date)[-2:]
-        if len(dates) >= 2:
-            result["large_holder_change"] = round(
-                sym_sh[dates[-1]]["large_holder_pct"] - sym_sh[dates[-2]]["large_holder_pct"], 4
-            )
-        elif len(dates) == 1:
-            result["large_holder_change"] = 0.0
-    else:
-        rows = tw_db.get_shareholder_history(symbol, before_date=signal_date, n=2)
-        if len(rows) >= 2:
-            result["large_holder_change"] = round(
-                rows[0]["large_holder_pct"] - rows[1]["large_holder_pct"], 4
-            )
-        elif len(rows) == 1:
-            result["large_holder_change"] = 0.0
 
     # ── Fundamentals: revenue_yoy, revenue_mom ─────────────────────────
     if revenue_data is not None:
@@ -1249,7 +1299,6 @@ def _rank_stocks_with_history(
     _assign_percentile(eligible, "inst_volume_ratio", "_rank_ivr",   reverse=False)
     _assign_percentile(eligible, "foreign_net_5d",    "_rank_fnet",  reverse=False)
     _assign_percentile(eligible, "trust_streak",      "_rank_tstrk", reverse=False)
-    _assign_percentile(eligible, "large_holder_change","_rank_lhc",  reverse=False)
     _assign_percentile(eligible, "foreign_streak",    "_rank_fstrk", reverse=False)
     # Fundamental (15%)
     _assign_percentile(eligible, "revenue_yoy",   "_rank_ryoy", reverse=False)
@@ -1273,7 +1322,6 @@ def _rank_stocks_with_history(
             + s.get("_rank_ivr", 50)   * w["inst_volume_ratio"]
             + s.get("_rank_fnet", 50)  * w["foreign_net_5d"]
             + s.get("_rank_tstrk", 50) * w["trust_streak"]
-            + s.get("_rank_lhc", 50)   * w["large_holder_change"]
             + s.get("_rank_fstrk", 50) * w["foreign_streak"]
             # Fundamental (15%)
             + s.get("_rank_ryoy", 50)  * w["revenue_yoy"]
@@ -1309,7 +1357,6 @@ def _rank_stocks_with_history(
                 "inst_volume_ratio":    s.get("_rank_ivr", 0),
                 "foreign_net_5d":       s.get("_rank_fnet", 0),
                 "trust_streak":         s.get("_rank_tstrk", 0),
-                "large_holder_change":  s.get("_rank_lhc", 0),
                 "foreign_streak":       s.get("_rank_fstrk", 0),
                 "revenue_yoy":          s.get("_rank_ryoy", 0),
                 "revenue_mom":          s.get("_rank_rmom", 0),
