@@ -251,16 +251,13 @@ def fetch_for_date(target_date: date) -> dict:
         # Likely a holiday
         return {"date": target_date.isoformat(), "prices": [], "trading_day": False}
 
-    # Merge P/E into prices
-    enriched = []
+    # Merge P/E into prices (date already attached by underlying fetchers)
     for p in all_prices:
         code = p["symbol"].replace(".TW", "")
         if code in pe_map:
             p.update(pe_map[code])
-        p["date"] = target_date.isoformat()
-        enriched.append(p)
 
-    return {"date": target_date.isoformat(), "prices": enriched, "trading_day": True}
+    return {"date": target_date.isoformat(), "prices": all_prices, "trading_day": True}
 
 
 def fetch_industry_mapping() -> dict[str, dict]:
@@ -337,7 +334,14 @@ def _fetch_twse_daily_for_date(target_date: date) -> list[dict]:
         if not stock_rows:
             stock_rows = data.get("data9", data.get("data8", []))
 
-        return [_parse_twse_row(row) for row in stock_rows if _parse_twse_row(row)]
+        iso = target_date.isoformat()
+        results = []
+        for row in stock_rows:
+            parsed = _parse_twse_row(row)
+            if parsed:
+                parsed["date"] = iso
+                results.append(parsed)
+        return results
 
     except Exception as e:
         logger.error("TWSE daily fetch failed for %s: %s", target_date, e)
@@ -416,7 +420,14 @@ def _fetch_tpex_daily_for_date(target_date: date) -> list[dict]:
         if not rows:
             rows = data.get("aaData", [])
 
-        return [_parse_tpex_row(row) for row in rows if _parse_tpex_row(row)]
+        iso = target_date.isoformat()
+        results = []
+        for row in rows:
+            parsed = _parse_tpex_row(row)
+            if parsed:
+                parsed["date"] = iso
+                results.append(parsed)
+        return results
     except Exception as e:
         logger.error("TPEX daily fetch failed for %s: %s", target_date, e)
         return []
@@ -572,9 +583,6 @@ def fetch_institutional_for_date(target_date: date) -> dict:
     if not all_records:
         return {"date": target_date.isoformat(), "records": [], "trading_day": False}
 
-    for r in all_records:
-        r["date"] = target_date.isoformat()
-
     return {"date": target_date.isoformat(), "records": all_records, "trading_day": True}
 
 
@@ -600,10 +608,12 @@ def _fetch_twse_institutional(target_date: date) -> list[dict]:
                     rows = table["data"]
                     break
 
+        iso = target_date.isoformat()
         results = []
         for row in rows:
             parsed = _parse_twse_institutional_row(row)
             if parsed:
+                parsed["date"] = iso
                 results.append(parsed)
 
         logger.info("TWSE institutional: %d records for %s", len(results), target_date)
@@ -664,10 +674,12 @@ def _fetch_tpex_institutional(target_date: date) -> list[dict]:
                     rows = table["data"]
                     break
 
+        iso = target_date.isoformat()
         results = []
         for row in rows:
             parsed = _parse_tpex_institutional_row(row)
             if parsed:
+                parsed["date"] = iso
                 results.append(parsed)
 
         logger.info("TPEX institutional: %d records for %s", len(results), target_date)
@@ -958,12 +970,9 @@ def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None
 
     result = {}
 
-    # ── MA200 (作為 ML 特徵的 close/MA200 比值；不再做前置過濾) ──────────
+    # ── MA200 （保留計算供其他模組查詢；v7.3 起不再做為 ML 特徵或前置過濾）─
     if len(closes) >= 200:
-        ma200 = sum(closes[-200:]) / 200
-        result["ma200"] = ma200
-        if ma200 > 0 and closes[-1] is not None:
-            result["close_to_ma200_ratio"] = round(closes[-1] / ma200 - 1.0, 4)
+        result["ma200"] = sum(closes[-200:]) / 200
 
     # ── KD Cross: golden cross near relative low → high score ──────────
     if len(full_rows) >= 9:
