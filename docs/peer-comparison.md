@@ -250,7 +250,7 @@ data/tw_market.db
 
 | 維度 | 因子 | 權重 | 計算方式 | 排名方向 | 設計理由 |
 |------|------|------|---------|---------|---------|
-| **技術面 50%** | bb_squeeze | 8% | 布林帶寬在 120 日內的百分位 | 越低越好（反轉） | 波動壓縮是起漲的前戲 |
+| **技術面 50%** | bb_squeeze | 8% | 布林帶寬在 60 日內「擠壓度」百分位（100 = 今天最窄，0 = 今天最寬） | 越高越好 | 波動壓縮是起漲的前戲 |
 | | volume_breakout | 8% | today_vol / avg_vol_20d | 越大越好 | 帶量突破才是真突破，防範假突破 |
 | | box_breakout | 7% | close ≥ 60d_high 時 100/range%，否則 0 | 越大越好 | 帶量出箱型，最容易發動長波段 |
 | | squeeze_volume | 6% | max(0, (σ20d-σ5d)/σ20d) × 量比 | 越大越好 | 窒息量後首條補量紅棒的起漲訊號 |
@@ -290,7 +290,7 @@ data/tw_market.db
 | foreign_streak / trust_streak | 同上 | 需 20 個交易日歷史以計算連續天數 |
 | inst_volume_ratio | 法人資料 + daily_prices | 需法人資料 + 5 日成交量 |
 | revenue_yoy / revenue_mom | TWSE/TPEX opendata | 僅能取得最新期，需每月累積 |
-| bb_squeeze | daily_prices 表 | 需 20 日以上收盤價（理想 120 日） |
+| bb_squeeze | daily_prices 表 | 需 20 日以上收盤價（理想 60 日） |
 | box_breakout / avwap_dev | daily_prices 表 | 需 60 日 OHLCV |
 | tangled_ma | daily_prices 表 | 需 60 日收盤價以計算 MA60 |
 | kd_cross | daily_prices 表 | 需 9 日以上 OHLC |

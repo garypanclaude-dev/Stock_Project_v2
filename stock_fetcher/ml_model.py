@@ -38,6 +38,8 @@ from .ml_config import (
     LGBM_PARAMS,
     MODEL_PATH,
     META_PATH,
+    CALIBRATOR_PATH,
+    ENABLE_CALIBRATION,
     FEATURE_NAMES,
     PURGE_GAP_DAYS,
     WF_FOLD_DAYS,
@@ -339,6 +341,35 @@ def _compute_precision_at_top_n(
     return round(float(hits / n) * 100, 1)
 
 
+def _calibration_diagnostics(
+    y_true: np.ndarray, y_prob: np.ndarray, top_pct: float = 10.0,
+) -> dict:
+    """回傳 Brier score 與最高 X% 預測機率區段的可靠度（預測 vs 實際）。"""
+    n = len(y_true)
+    brier = float(np.mean((y_prob - y_true) ** 2)) if n > 0 else None
+
+    top_n = max(1, int(n * top_pct / 100))
+    top_idx = np.argsort(y_prob)[-top_n:]
+    pred_avg = float(np.mean(y_prob[top_idx])) * 100 if top_n > 0 else None
+    actual_rate = float(np.mean(y_true[top_idx])) * 100 if top_n > 0 else None
+
+    return {
+        "brier": round(brier, 4) if brier is not None else None,
+        f"top{int(top_pct)}pct_predicted_avg": round(pred_avg, 1) if pred_avg is not None else None,
+        f"top{int(top_pct)}pct_actual_rate": round(actual_rate, 1) if actual_rate is not None else None,
+        f"top{int(top_pct)}pct_n": top_n,
+    }
+
+
+def _fit_calibrator(y_true: np.ndarray, y_prob: np.ndarray):
+    """以 OOS 預測訓練 Isotonic Regression 校準器。"""
+    from sklearn.isotonic import IsotonicRegression
+
+    calibrator = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+    calibrator.fit(y_prob, y_true)
+    return calibrator
+
+
 def train_model() -> dict:
     """Train LightGBM binary classifier with Walk-Forward Expanding + Purge Gap.
 
@@ -456,6 +487,36 @@ def train_model() -> dict:
         f"{oos_precision_top10:.1f}%" if oos_precision_top10 is not None else "N/A",
     )
 
+    # ── Probability Calibration（Isotonic Regression on OOS preds） ───────
+    calibration_info = {"enabled": False}
+    calibrator = None
+    if ENABLE_CALIBRATION and oos_mask.sum() >= 50 and len(set(y[oos_mask])) > 1:
+        import joblib
+
+        y_oos = y[oos_mask].astype(np.float64)
+        p_oos = oos_preds[oos_mask]
+
+        before = _calibration_diagnostics(y_oos, p_oos)
+        calibrator = _fit_calibrator(y_oos, p_oos)
+        p_oos_cal = calibrator.predict(p_oos)
+        after = _calibration_diagnostics(y_oos, p_oos_cal)
+
+        os.makedirs(os.path.dirname(CALIBRATOR_PATH), exist_ok=True)
+        joblib.dump(calibrator, CALIBRATOR_PATH)
+
+        calibration_info = {
+            "enabled": True,
+            "method": "isotonic",
+            "fit_samples": int(oos_mask.sum()),
+            "before": before,
+            "after": after,
+        }
+        logger.info(
+            "ML calibration: Brier %.4f → %.4f, Top10%% predicted %.1f%% / actual %.1f%%",
+            before["brier"], after["brier"],
+            after["top10pct_predicted_avg"], after["top10pct_actual_rate"],
+        )
+
     # ── Final production model: train on ALL data ─────────────────────────
     final_model = _train_lgbm(X, y)
 
@@ -508,6 +569,7 @@ def train_model() -> dict:
         "feature_importance": feature_importance,
         "feature_names": FEATURE_NAMES,
         "tier_thresholds": TIER_THRESHOLDS,
+        "calibration": calibration_info,
     }
     with open(META_PATH, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
@@ -536,6 +598,7 @@ def train_model() -> dict:
         },
         "feature_importance": feature_importance,
         "train_period": meta["train_period"],
+        "calibration": calibration_info,
     }
 
 
@@ -566,6 +629,12 @@ def predict_today() -> dict:
     if os.path.exists(META_PATH):
         with open(META_PATH, "r", encoding="utf-8") as f:
             meta = json.load(f)
+
+    calibrator = None
+    if ENABLE_CALIBRATION and os.path.exists(CALIBRATOR_PATH):
+        import joblib
+        calibrator = joblib.load(CALIBRATOR_PATH)
+        logger.info("ML predict: calibrator loaded from %s", CALIBRATOR_PATH)
 
     (
         trading_dates, prices, companies,
@@ -609,7 +678,10 @@ def predict_today() -> dict:
         features = _extract_features(enriched)
 
         X = np.array([features], dtype=np.float64)
-        prob_pct = float(model.predict(X)[0]) * 100
+        raw_prob = float(model.predict(X)[0])
+        if calibrator is not None:
+            raw_prob = float(calibrator.predict(np.array([raw_prob]))[0])
+        prob_pct = raw_prob * 100
 
         company = companies.get(sym, {})
         predictions.append({
@@ -638,6 +710,8 @@ def predict_today() -> dict:
             "feature_importance": meta.get("feature_importance", []),
             "tier_thresholds": TIER_THRESHOLDS,
             "triple_barrier": meta.get("triple_barrier", {}),
+            "calibration": meta.get("calibration", {}),
+            "calibrated": calibrator is not None,
         },
     }
 
@@ -662,4 +736,5 @@ def get_model_status() -> dict:
         "feature_importance": meta.get("feature_importance", []),
         "tier_thresholds": meta.get("tier_thresholds", {}),
         "triple_barrier": meta.get("triple_barrier", {}),
+        "calibration": meta.get("calibration", {}),
     }

@@ -1029,7 +1029,9 @@ def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None
     if len(volumes) >= 5:
         result["avg_vol_5d"] = sum(volumes[-5:]) / 5
 
-    # ── BB Squeeze: bandwidth percentile within 120-day window ───────────
+    # ── BB Squeeze: bandwidth squeeze percentile within 60-day window ────
+    # 60 日 lookback 對齊 10 日預測視野（Triple-Barrier MAX_HOLDING_DAYS=10）
+    # 語義：100 = 今天最擠（過去 60 天 bandwidth 都 >= 今天）；0 = 今天最寬
     if len(closes) >= 20:
         from .indicators import bollinger_bands
         bb = bollinger_bands(closes, period=20, num_std=2.0)
@@ -1039,10 +1041,10 @@ def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None
             if u is not None and m is not None and m > 0
         ]
         if bandwidths:
-            lookback = bandwidths[-120:]
+            lookback = bandwidths[-60:]
             current_bw = bandwidths[-1]
-            below = sum(1 for x in lookback if x < current_bw)
-            result["bb_squeeze"] = round(below / len(lookback) * 100, 1)
+            wider_or_equal = sum(1 for x in lookback if x >= current_bw)
+            result["bb_squeeze"] = round(wider_or_equal / len(lookback) * 100, 1)
 
     # ── Price Position: normalized position within 60d high-low range ────
     if len(full_rows) >= 60:
@@ -1285,7 +1287,7 @@ def _rank_stocks_with_history(
 
     # ── Percentile ranks ─────────────────────────────────────────────────
     # Technical (50%)
-    _assign_percentile(eligible, "bb_squeeze",      "_rank_bbsq",  reverse=True)
+    _assign_percentile(eligible, "bb_squeeze",      "_rank_bbsq",  reverse=False)
     _assign_percentile(eligible, "volume_breakout", "_rank_volbk", reverse=False)
     _assign_percentile(eligible, "box_breakout",    "_rank_boxbk", reverse=False)
     _assign_percentile(eligible, "squeeze_volume",  "_rank_sqvol", reverse=False)

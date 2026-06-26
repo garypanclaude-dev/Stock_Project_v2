@@ -52,6 +52,12 @@ import os
 MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 MODEL_PATH = os.path.join(MODEL_DIR, "ml_model.txt")
 META_PATH = os.path.join(MODEL_DIR, "ml_model_meta.json")
+CALIBRATOR_PATH = os.path.join(MODEL_DIR, "ml_calibrator.pkl")
+
+# ── 機率校準 ──────────────────────────────────────────────────────────────
+# is_unbalance=True 會系統性拉高預測機率，使用 Isotonic Regression 校正
+# 校準器以 walk-forward OOS 預測為訓練資料
+ENABLE_CALIBRATION = True
 
 # ── 特徵清單（原始值，非百分位） ──────────────────────────────────────────
 FEATURE_NAMES = [
