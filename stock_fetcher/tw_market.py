@@ -958,9 +958,12 @@ def _compute_multi_day_factors(symbol: str, *, history: list[dict] | None = None
 
     result = {}
 
-    # ── MA200 (pre-filter, not a ranked factor) ──────────────────────────
+    # ── MA200 (作為 ML 特徵的 close/MA200 比值；不再做前置過濾) ──────────
     if len(closes) >= 200:
-        result["ma200"] = sum(closes[-200:]) / 200
+        ma200 = sum(closes[-200:]) / 200
+        result["ma200"] = ma200
+        if ma200 > 0 and closes[-1] is not None:
+            result["close_to_ma200_ratio"] = round(closes[-1] / ma200 - 1.0, 4)
 
     # ── KD Cross: golden cross near relative low → high score ──────────
     if len(full_rows) >= 9:
@@ -1256,14 +1259,6 @@ def _rank_stocks_with_history(
             s.update(_compute_multi_day_factors(sym, history=histories[sym]))
         else:
             s.update(_compute_multi_day_factors(sym))
-
-    # MA200 pre-filter: exclude stocks trading below 200-day MA
-    eligible = [
-        s for s in eligible
-        if s.get("ma200") is None or s.get("close", 0) >= s["ma200"]
-    ]
-    if not eligible:
-        return []
 
     # Enrich with extended factors (chipflow + fundamentals)
     for s in eligible:

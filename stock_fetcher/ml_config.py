@@ -15,7 +15,7 @@ MAX_HOLDING_DAYS = 10               # 時間軌（最長持有天數）
 BENCHMARK_SYMBOL = "0050.TW"        # 仍保留作為其他用途（不參與 label）
 
 # ── 訓練參數 ──────────────────────────────────────────────────────────────
-WARM_UP_DAYS = 120                  # 篩選器暖機天數（與 backtest_config 一致）
+WARM_UP_DAYS = 60                   # 篩選器暖機天數（與 backtest_config 一致；BB60/MA60 對齊）
 MIN_TRAIN_DAYS = 60                 # 最少訓練交易日數
 MIN_VOLUME = 500                    # 最低成交量門檻（張）
 
@@ -70,6 +70,7 @@ FEATURE_NAMES = [
     "near_breakout",
     "price_position",
     "tangled_ma",
+    "close_to_ma200_ratio",
     "liquidity_sweep",
     "obv_divergence",
     "volume_contraction",

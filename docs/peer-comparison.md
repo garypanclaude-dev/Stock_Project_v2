@@ -1,6 +1,6 @@
 # P1-5 同業比較、自選股比較、潛力股篩選
 
-> 版本：7.1
+> 版本：7.2
 > 最後更新：2026-06-26
 > v3.3：潛力股篩選 B7 整合 — 8 → 10 因子，新增 KD、OBV；ma_trend 升級為 4 態（含糾結判定）
 > v3.4：潛力股篩選 B8 整合 — 10 → 11 因子，新增 K 線型態因子
@@ -11,6 +11,7 @@
 > v6.0：**篩選器 v5 因子擴充** — 10 因子 → 16 因子。新增 MA200 前置過濾、BB squeeze、成交量突破、箱型突破、Anchored VWAP、Liquidity Sweep、法人吃貨比、外資/投信連買天數。移除 revenue_acceleration（資料不足）及 ma_convergence（與 BB squeeze 重疊）。權重重分配：技術面 40% / 籌碼面 40% / 基本面 20%。
 > v7.0：**篩選器經理人實戰調校** — 16 因子 → 15 因子。KD 從絕對值評分改為黃金交叉偵測（kd_cross）。新增均線糾結因子（tangled_ma）。移除 pe_percentile，以 revenue_mom 取代。投信權重調高（主動型基金主力）、外資調低（避免權值股干擾）。權重重分配：技術面 50% / 籌碼面 35% / 基本面 15%。
 > v7.1：**移除 large_holder_change 因子** — 15 因子 → 14 因子。TDCC opendata API 不支援歷史查詢（不論傳入日期，永遠回傳最新一期），導致回填資料全為重複值，large_holder_change 恆為 0，對模型無區分力。暫時移除，待累積足夠真實歷史資料後再評估重新啟用。籌碼面權重重分配至投信/外資相關因子。修正 TDCC 抓取邏輯改用 API 回傳的實際發布日期。
+> v7.2：**移除 MA200 前置過濾 + WARM_UP_DAYS 120 → 60** — 篩選器與 ML 模型不再硬性排除收盤價 < MA200 的個股，改讓模型自行學習多空格局。ML 特徵新增 `close_to_ma200_ratio = close/MA200 - 1`（資料不足以 NaN 表示，由 LightGBM 原生處理），保留 MA200 的長週期 regime 資訊作為連續特徵。BB squeeze 已於 v7.1 改為 60 日 lookback，配合 MA200 prefilter 移除，WARM_UP 由 120 降至 60，回測/IC 樣本期間多取得 60 個交易日。
 
 ## 概述
 
@@ -242,7 +243,8 @@ data/tw_market.db
 - 排除日均成交量 < 500 張（流動性不足）
 - 排除代號非 4 碼純數字（特別股、ETF、權證）
 - 排除收盤價為 0 或無成交紀錄
-- **排除收盤價 < MA200**（長期處於空頭趨勢的股票）。歷史不足 200 日者不排除。
+
+> v7.2 已移除原本的 MA200 前置過濾（收盤 < MA200 排除）。改由 ML 模型透過 `close_to_ma200_ratio` 特徵自行判斷多空格局，使模型能學習空頭環境下的因子行為。
 
 ### 14 因子評分模型（v7.0 → v7.1）
 
@@ -294,7 +296,7 @@ data/tw_market.db
 | box_breakout / avwap_dev | daily_prices 表 | 需 60 日 OHLCV |
 | tangled_ma | daily_prices 表 | 需 60 日收盤價以計算 MA60 |
 | kd_cross | daily_prices 表 | 需 9 日以上 OHLC |
-| MA200 前置過濾 | daily_prices 表 | 需 200 日收盤價，不足者不排除 |
+| close_to_ma200_ratio（ML 特徵） | daily_prices 表 | 需 200 日收盤價，不足者為 NaN（LightGBM 原生處理） |
 
 ### kd_cross 因子細節
 
@@ -316,7 +318,7 @@ KD(9,3,3) 黃金交叉偵測：前一期 K < D 且本期 K ≥ D 為交叉成立
 | **技術面** | RSI, MACD, 均線, 布林, KD, OBV | BB squeeze, 量突破, 箱型突破, 量能擠壓, AVWAP, 突破, 均線糾結, KD 交叉, Liquidity Sweep |
 | **基本面** | P/E, ROE, 營收趨勢, Margin, 殖利率 | 營收年增率, 營收月增率 |
 | **籌碼面** | ❌ | ✅ 投信/外資淨買超, 法人吃貨比, 投信/外資連買天數 |
-| **前置過濾** | ❌ | ✅ MA200 年線過濾（排除長期空頭） |
+| **前置過濾** | ❌ | ❌（v7.2 移除 MA200 過濾，改由 ML `close_to_ma200_ratio` 特徵學習） |
 | **適用場景** | 評估個股是否適合進場交易 | 從全市場篩選短線/波段候選標的 |
 
 ### API

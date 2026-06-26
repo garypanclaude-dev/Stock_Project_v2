@@ -66,6 +66,7 @@ def _extract_features(stock: dict) -> list[float | None]:
         "near_breakout": stock.get("near_breakout"),
         "price_position": stock.get("price_position"),
         "tangled_ma": stock.get("tangled_ma"),
+        "close_to_ma200_ratio": stock.get("close_to_ma200_ratio"),
         "liquidity_sweep": stock.get("liquidity_sweep"),
         "obv_divergence": stock.get("obv_divergence"),
         "volume_contraction": stock.get("volume_contraction"),
@@ -282,13 +283,6 @@ def _build_dataset(
             history = _get_history_before(prices, sym, signal_date, 200)
             if len(history) < 60:
                 continue
-
-            hist_fwd = list(reversed(history))
-            closes = [h["close"] for h in hist_fwd if h.get("close") is not None]
-            if len(closes) >= 200:
-                ma200 = sum(closes[-200:]) / 200
-                if row.get("close", 0) < ma200:
-                    continue
 
             label = _compute_triple_barrier_label(sym, buy_idx, trading_dates, prices)
             if label is None:
@@ -662,13 +656,6 @@ def predict_today() -> dict:
         history = _get_history_before(prices, sym, latest_date, 200)
         if len(history) < 60:
             continue
-
-        hist_fwd = list(reversed(history))
-        closes = [h["close"] for h in hist_fwd if h.get("close") is not None]
-        if len(closes) >= 200:
-            ma200 = sum(closes[-200:]) / 200
-            if row.get("close", 0) < ma200:
-                continue
 
         enriched = _enrich_stock(
             sym, history, latest_date,
