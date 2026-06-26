@@ -4,26 +4,37 @@ ML model configuration constants.
 All tuneable hyperparameters for the LightGBM prediction model.
 """
 
-# ── Label 定義 ──────────────────────────────────────────────────────────────
-FORWARD_DAYS = 5                    # 預測未來 N 個交易日的報酬
-EXCESS_RETURN_THRESHOLD = 2.0       # 超額報酬門檻 (%)：stock_return > bench_return + threshold → label=1
-BENCHMARK_SYMBOL = "0050.TW"
+# ── Label 定義：Triple-Barrier Method ─────────────────────────────────────
+# 從買入日起，往前掃描 MAX_HOLDING_DAYS 個交易日
+#   intraday high 觸及 +UPPER_BARRIER_PCT % → Y=1（先觸頂 = 起漲）
+#   intraday low  觸及  LOWER_BARRIER_PCT % → Y=0（先觸底 = 失敗）
+#   時間到期皆未觸及 → Y=0（震盪）
+UPPER_BARRIER_PCT = 10.0            # 上軌（賺錢波段觸發點）
+LOWER_BARRIER_PCT = -5.0            # 下軌（停損觸發點）
+MAX_HOLDING_DAYS = 10               # 時間軌（最長持有天數）
+BENCHMARK_SYMBOL = "0050.TW"        # 仍保留作為其他用途（不參與 label）
 
 # ── 訓練參數 ──────────────────────────────────────────────────────────────
 WARM_UP_DAYS = 120                  # 篩選器暖機天數（與 backtest_config 一致）
 MIN_TRAIN_DAYS = 60                 # 最少訓練交易日數
-EXTREME_RETURN_CAP = 30.0           # 排除 |return| > 30% 的極端值（除權息/異常交易）
 MIN_VOLUME = 500                    # 最低成交量門檻（張）
 
+# ── 推論分級門檻（機率） ─────────────────────────────────────────────────
+TIER_THRESHOLDS = {
+    "high": 70.0,                   # 預測起漲機率 ≥ 70% → 強力推薦
+    "medium": 50.0,                 # 預測起漲機率 ≥ 50% → 中等推薦
+}
+
 # ── Walk-Forward Expanding 參數 ──────────────────────────────────────────
-PURGE_GAP_DAYS = 5                  # 訓練/測試安全間隔（= FORWARD_DAYS，防止 label 洩漏）
-WF_FOLD_DAYS = 5                    # 每個測試 fold 的交易日數（= FORWARD_DAYS）
+PURGE_GAP_DAYS = 10                 # 訓練/測試安全間隔（= MAX_HOLDING_DAYS，防止 label 洩漏）
+WF_FOLD_DAYS = 10                   # 每個測試 fold 的交易日數
 WF_MIN_TRAIN_SAMPLES = 100          # 每個 fold 最少訓練樣本數
 
 # ── LightGBM 超參數 ──────────────────────────────────────────────────────
 LGBM_PARAMS = {
     "objective": "binary",
     "metric": "auc",
+    "is_unbalance": True,           # 自動處理類別不平衡（起漲為稀有事件）
     "verbosity": -1,
     "n_estimators": 300,
     "learning_rate": 0.03,
@@ -60,10 +71,10 @@ FEATURE_NAMES = [
     "k_value",
     "d_value",
     "k_minus_d",
-    # 籌碼面
-    "trust_net_5d",
+    # 籌碼面（法人買超已正規化 = 5日淨買超 / 5日總成交量 × 100%）
+    "trust_net_5d_norm",
+    "foreign_net_5d_norm",
     "inst_volume_ratio",
-    "foreign_net_5d",
     "trust_streak",
     "foreign_streak",
     # 基本面

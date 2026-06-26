@@ -1349,6 +1349,7 @@ function renderMLResults(data) {
   const info = data.model_info || {};
   const picks = data.top_picks || [];
 
+  const metrics = info.metrics || {};
   const infoHtml = `
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
       <div class="bg-slate-900/50 rounded-xl p-3 border border-slate-700 text-center">
@@ -1356,12 +1357,12 @@ function renderMLResults(data) {
         <div class="text-lg font-bold tabular-nums">${(info.total_samples||0).toLocaleString()}</div>
       </div>
       <div class="bg-slate-900/50 rounded-xl p-3 border border-slate-700 text-center">
-        <div class="text-xs text-slate-500 mb-1">正樣本比例</div>
-        <div class="text-lg font-bold tabular-nums">${info.positive_rate||0}%</div>
+        <div class="text-xs text-slate-500 mb-1">OOS AUC</div>
+        <div class="text-lg font-bold tabular-nums">${metrics.oos_auc ?? '–'}</div>
       </div>
       <div class="bg-slate-900/50 rounded-xl p-3 border border-slate-700 text-center">
-        <div class="text-xs text-slate-500 mb-1">AUC (in-sample)</div>
-        <div class="text-lg font-bold tabular-nums">${info.auc_insample||0}</div>
+        <div class="text-xs text-slate-500 mb-1">Precision@Top10</div>
+        <div class="text-lg font-bold tabular-nums">${metrics.oos_precision_top10 ?? '–'}%</div>
       </div>
       <div class="bg-slate-900/50 rounded-xl p-3 border border-slate-700 text-center">
         <div class="text-xs text-slate-500 mb-1">訓練區間</div>
@@ -1389,7 +1390,7 @@ function renderMLResults(data) {
   // Prediction table
   const tableHtml = picks.length ? `
     <div class="flex items-center justify-between mb-2">
-      <h3 class="text-xs font-semibold text-slate-400">預測排名 — 超額報酬機率 Top 30</h3>
+      <h3 class="text-xs font-semibold text-slate-400">預測排名 — 起漲機率 Top 30</h3>
       <button onclick="trainML()" id="ml-retrain-btn" ${mlTraining?'disabled':''}
         class="text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1 rounded-lg text-slate-300 transition">
         重新訓練
@@ -1401,20 +1402,25 @@ function renderMLResults(data) {
         <th class="py-2 px-2 text-left font-medium w-10">#</th>
         <th class="py-2 px-2 text-left font-medium">代號</th>
         <th class="py-2 px-2 text-left font-medium">名稱</th>
-        <th class="py-2 px-2 text-right font-medium">ML 機率</th>
+        <th class="py-2 px-2 text-right font-medium">起漲機率%</th>
+        <th class="py-2 px-2 text-center font-medium">推薦</th>
         <th class="py-2 px-2 text-right font-medium">收盤價</th>
         <th class="py-2 px-2 text-right font-medium">漲跌%</th>
         <th class="py-2 px-2 text-right font-medium">成交量(張)</th>
       </tr></thead>
       <tbody>${picks.map((p, i) => {
         const chgColor = p.change_pct >= 0 ? 'text-green-400' : 'text-red-400';
-        const probColor = p.probability >= 60 ? '#16a34a' : p.probability >= 40 ? '#22c55e' : p.probability >= 20 ? '#f59e0b' : '#94a3b8';
+        const prob = p.breakout_probability;
+        const probColor = prob >= 70 ? '#16a34a' : prob >= 50 ? '#22c55e' : prob >= 30 ? '#f59e0b' : '#94a3b8';
+        const tierLabel = p.tier === 'high' ? '★★★' : p.tier === 'medium' ? '★★' : '★';
+        const tierColor = p.tier === 'high' ? 'text-yellow-400' : p.tier === 'medium' ? 'text-blue-400' : 'text-slate-500';
         const sym = p.symbol.replace('.TW','');
         return `<tr class="border-b border-slate-700/50 hover:bg-slate-700/30 cursor-pointer" onclick="switchToStock('${p.symbol}')">
           <td class="py-2 px-2 text-slate-500">${i+1}</td>
           <td class="py-2 px-2 font-mono font-bold text-slate-200">${sym}</td>
           <td class="py-2 px-2 text-slate-300">${escHtml(p.name)}</td>
-          <td class="py-2 px-2 text-right font-bold tabular-nums" style="color:${probColor}">${p.probability}%</td>
+          <td class="py-2 px-2 text-right font-bold tabular-nums" style="color:${probColor}">${prob}%</td>
+          <td class="py-2 px-2 text-center ${tierColor}">${tierLabel}</td>
           <td class="py-2 px-2 text-right tabular-nums text-slate-200">$${p.close}</td>
           <td class="py-2 px-2 text-right tabular-nums ${chgColor}">${p.change_pct>=0?'+':''}${p.change_pct}%</td>
           <td class="py-2 px-2 text-right tabular-nums text-slate-400">${fmtVol(p.volume)}</td>

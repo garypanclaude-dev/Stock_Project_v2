@@ -1,8 +1,10 @@
 """
-LightGBM prediction model for stock screening.
+LightGBM binary classification model for breakout detection.
 
-Label: 未來 5 日報酬 > 0050 同期報酬 + 2% → 1，否則 0
-Features: 14 因子原始值（非百分位），KD 拆解為 k/d/k-d 三個連續特徵 + near_breakout/price_position，共 19 維
+Label: Triple-Barrier Method
+  Y=1 if intraday high reaches +UPPER_BARRIER_PCT% within MAX_HOLDING_DAYS (起漲)
+  Y=0 if intraday low reaches LOWER_BARRIER_PCT% first, OR time barrier expires
+Features: 21 維原始值（技術面 + 籌碼面 + 基本面）
 
 Usage:
     from stock_fetcher.ml_model import train_model, predict_today
@@ -25,13 +27,14 @@ from .tw_market import (
     SCREENER_CONFIG,
 )
 from .ml_config import (
-    FORWARD_DAYS,
-    EXCESS_RETURN_THRESHOLD,
+    UPPER_BARRIER_PCT,
+    LOWER_BARRIER_PCT,
+    MAX_HOLDING_DAYS,
     BENCHMARK_SYMBOL,
     WARM_UP_DAYS,
     MIN_TRAIN_DAYS,
-    EXTREME_RETURN_CAP,
     MIN_VOLUME,
+    TIER_THRESHOLDS,
     LGBM_PARAMS,
     MODEL_PATH,
     META_PATH,
@@ -67,9 +70,9 @@ def _extract_features(stock: dict) -> list[float | None]:
         "k_value": k_val,
         "d_value": d_val,
         "k_minus_d": k_minus_d,
-        "trust_net_5d": stock.get("trust_net_5d"),
+        "trust_net_5d_norm": stock.get("trust_net_5d_norm"),
+        "foreign_net_5d_norm": stock.get("foreign_net_5d_norm"),
         "inst_volume_ratio": stock.get("inst_volume_ratio"),
-        "foreign_net_5d": stock.get("foreign_net_5d"),
         "trust_streak": stock.get("trust_streak"),
         "foreign_streak": stock.get("foreign_streak"),
         "revenue_yoy": stock.get("revenue_yoy"),
@@ -117,12 +120,16 @@ def _enrich_stock(
     )
     result.update(ext)
 
-    # inst_volume_ratio
+    # 法人籌碼去量綱化：除以 5 日總成交量，保留方向性
     avg_vol = result.get("avg_vol_5d")
-    fnet = abs(result.get("foreign_net_5d", 0) or 0)
-    tnet = abs(result.get("trust_net_5d", 0) or 0)
     if avg_vol and avg_vol > 0:
-        result["inst_volume_ratio"] = round((fnet + tnet) / (avg_vol * 5) * 100, 4)
+        total_vol_5d = avg_vol * 5
+        fnet = result.get("foreign_net_5d") or 0
+        tnet = result.get("trust_net_5d") or 0
+        result["foreign_net_5d_norm"] = round(fnet / total_vol_5d * 100, 4)
+        result["trust_net_5d_norm"] = round(tnet / total_vol_5d * 100, 4)
+        # inst_volume_ratio：法人關注度（不分方向，衡量法人在量能中的參與度）
+        result["inst_volume_ratio"] = round((abs(fnet) + abs(tnet)) / total_vol_5d * 100, 4)
 
     return result
 
@@ -190,6 +197,53 @@ def _get_history_before(
 
 # ── Training ────────────────────────────────────────────────────────────────
 
+def _compute_triple_barrier_label(
+    sym: str,
+    buy_idx: int,
+    trading_dates: list[str],
+    prices: dict,
+) -> int | None:
+    """Triple-Barrier label：往前掃描 MAX_HOLDING_DAYS 個交易日。
+
+    Returns:
+        1 if upper barrier hit first（intraday high reach +UPPER_BARRIER_PCT%）
+        0 if lower barrier hit first OR time barrier expires
+        None if insufficient data
+    """
+    if buy_idx >= len(trading_dates):
+        return None
+
+    buy_date = trading_dates[buy_idx]
+    sym_prices = prices.get(sym, {})
+    buy_data = sym_prices.get(buy_date)
+    if not buy_data or not buy_data.get("open") or buy_data["open"] <= 0:
+        return None
+
+    buy_price = buy_data["open"]
+    upper_price = buy_price * (1 + UPPER_BARRIER_PCT / 100)
+    lower_price = buy_price * (1 + LOWER_BARRIER_PCT / 100)
+
+    end_idx = min(buy_idx + MAX_HOLDING_DAYS, len(trading_dates))
+
+    for i in range(buy_idx, end_idx):
+        d = trading_dates[i]
+        day_data = sym_prices.get(d)
+        if not day_data:
+            continue
+        high = day_data.get("high")
+        low = day_data.get("low")
+        if high is None or low is None:
+            continue
+
+        # 若同日上下軌都被觸及，保守視為先觸下軌（避免高估）
+        if low <= lower_price:
+            return 0
+        if high >= upper_price:
+            return 1
+
+    return 0
+
+
 def _build_dataset(
     trading_dates: list[str],
     prices: dict,
@@ -197,7 +251,7 @@ def _build_dataset(
     revenue_data: dict,
     shareholder_data: dict,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Build feature matrix, label array, and signal-date array from historical data."""
+    """Build feature matrix, label array (Triple-Barrier binary), and signal-date array."""
     date_to_idx = {d: i for i, d in enumerate(trading_dates)}
     backtest_dates = trading_dates[WARM_UP_DAYS:]
 
@@ -210,24 +264,8 @@ def _build_dataset(
     for signal_date in backtest_dates:
         signal_idx = date_to_idx[signal_date]
         buy_idx = signal_idx + 1
-        if buy_idx >= len(trading_dates):
+        if buy_idx + MAX_HOLDING_DAYS > len(trading_dates):
             break
-        target_idx = buy_idx + FORWARD_DAYS
-        if target_idx >= len(trading_dates):
-            break
-
-        buy_date = trading_dates[buy_idx]
-        target_date = trading_dates[target_idx]
-
-        bench_buy = prices.get(BENCHMARK_SYMBOL, {}).get(buy_date)
-        bench_target = prices.get(BENCHMARK_SYMBOL, {}).get(target_date)
-        if not bench_buy or not bench_target:
-            continue
-        if not bench_buy.get("open") or bench_buy["open"] <= 0:
-            continue
-        if not bench_target.get("close"):
-            continue
-        bench_return = (bench_target["close"] / bench_buy["open"] - 1) * 100
 
         for sym, date_prices in prices.items():
             if sym == BENCHMARK_SYMBOL:
@@ -250,22 +288,9 @@ def _build_dataset(
                 if row.get("close", 0) < ma200:
                     continue
 
-            buy_data = (
-                date_prices.get(buy_date)
-                if buy_date in date_prices
-                else prices.get(sym, {}).get(buy_date)
-            )
-            target_data = prices.get(sym, {}).get(target_date)
-            if not buy_data or not buy_data.get("open") or buy_data["open"] <= 0:
+            label = _compute_triple_barrier_label(sym, buy_idx, trading_dates, prices)
+            if label is None:
                 continue
-            if not target_data or not target_data.get("close"):
-                continue
-
-            stock_return = (target_data["close"] / buy_data["open"] - 1) * 100
-            if abs(stock_return) > EXTREME_RETURN_CAP:
-                continue
-
-            label = 1 if stock_return > bench_return + EXCESS_RETURN_THRESHOLD else 0
 
             enriched = _enrich_stock(
                 sym, history, signal_date,
@@ -288,38 +313,41 @@ def _build_dataset(
 
 
 def _train_lgbm(X: np.ndarray, y: np.ndarray) -> "lgb.Booster":
-    """Train a single LightGBM model on the given data."""
+    """Train a single LightGBM regression model."""
     import lightgbm as lgb
 
-    pos_count = y.sum()
-    neg_count = len(y) - pos_count
-    spw = neg_count / pos_count if pos_count > 0 else 1.0
-
-    params = dict(LGBM_PARAMS)
-    params["scale_pos_weight"] = round(spw, 2)
+    params = {k: v for k, v in LGBM_PARAMS.items() if k != "n_estimators"}
 
     train_data = lgb.Dataset(
         X, label=y, feature_name=FEATURE_NAMES, free_raw_data=False,
     )
     return lgb.train(
-        {k: v for k, v in params.items() if k != "n_estimators"},
+        params,
         train_data,
-        num_boost_round=params["n_estimators"],
+        num_boost_round=LGBM_PARAMS["n_estimators"],
     )
 
 
-def train_model() -> dict:
-    """Train LightGBM with Walk-Forward Expanding + Purge Gap.
+def _compute_precision_at_top_n(
+    y_true: np.ndarray, y_pred: np.ndarray, n: int = 10,
+) -> float | None:
+    """預測機率前 N 名中，實際 label=1（觸頂）的比例 (%)。"""
+    if len(y_true) < n:
+        return None
+    top_idx = np.argsort(y_pred)[-n:]
+    hits = (y_true[top_idx] == 1).sum()
+    return round(float(hits / n) * 100, 1)
 
-    1. Build full dataset (features + labels) from historical data.
-    2. Walk-Forward Expanding: expanding training window, purge gap, fixed test fold.
-    3. Collect OOS predictions across all folds → OOS AUC.
+
+def train_model() -> dict:
+    """Train LightGBM binary classifier with Walk-Forward Expanding + Purge Gap.
+
+    1. Build dataset with Triple-Barrier labels.
+    2. Walk-Forward Expanding: expanding train window, purge gap, fixed test fold.
+    3. Collect OOS predictions → OOS AUC + Precision@Top10.
     4. Train final production model on all data.
     5. Save model + metadata.
-
-    Returns dict with training stats, OOS AUC, per-fold results, feature importance.
     """
-    import lightgbm as lgb
     from sklearn.metrics import roc_auc_score
 
     logger.info("ML train: loading data …")
@@ -337,9 +365,10 @@ def train_model() -> dict:
     if len(y) < WF_MIN_TRAIN_SAMPLES:
         return {"error": f"樣本不足：僅收集到 {len(y)} 筆（至少需要 {WF_MIN_TRAIN_SAMPLES} 筆）"}
 
+    pos_rate = float(y.mean()) * 100
     logger.info(
         "ML train: %d samples, positive rate %.1f%%, %d features",
-        len(y), y.mean() * 100, X.shape[1],
+        len(y), pos_rate, X.shape[1],
     )
 
     # ── Walk-Forward Expanding ────────────────────────────────────────────
@@ -348,6 +377,7 @@ def train_model() -> dict:
 
     oos_preds = np.full(len(y), np.nan)
     fold_results = []
+    fold_aucs = []
 
     cursor = MIN_TRAIN_DAYS
     fold_num = 0
@@ -379,11 +409,14 @@ def train_model() -> dict:
 
         y_test = y[test_idx]
         fold_auc = (
-            round(roc_auc_score(y_test, preds), 4)
-            if len(set(y_test)) > 1
-            else None
+            round(float(roc_auc_score(y_test, preds)), 4)
+            if len(set(y_test)) > 1 else None
         )
+        fold_prec = _compute_precision_at_top_n(y_test, preds)
         fold_num += 1
+
+        if fold_auc is not None:
+            fold_aucs.append(fold_auc)
 
         fold_results.append({
             "fold": fold_num,
@@ -394,34 +427,43 @@ def train_model() -> dict:
             "test_samples": int(len(test_idx)),
             "test_pos_rate": round(float(y_test.mean()) * 100, 1),
             "auc": fold_auc,
+            "precision_top10": fold_prec,
         })
 
         logger.info(
-            "ML fold %d: train=%d test=%d AUC=%s [%s → %s]",
+            "ML fold %d: train=%d test=%d AUC=%s P@10=%s [%s → %s]",
             fold_num, len(train_idx), len(test_idx),
             f"{fold_auc:.4f}" if fold_auc is not None else "N/A",
+            f"{fold_prec:.1f}%" if fold_prec is not None else "N/A",
             unique_dates[test_start_idx], unique_dates[test_end_idx - 1],
         )
 
         cursor = test_end_idx
 
-    # OOS AUC（所有 fold 的預測合併計算）
+    # ── OOS 綜合指標 ─────────────────────────────────────────────────────
     oos_mask = ~np.isnan(oos_preds)
     oos_auc = None
+    oos_precision_top10 = None
+
     if oos_mask.sum() > 0 and len(set(y[oos_mask])) > 1:
         oos_auc = round(float(roc_auc_score(y[oos_mask], oos_preds[oos_mask])), 4)
+        oos_precision_top10 = _compute_precision_at_top_n(y[oos_mask], oos_preds[oos_mask])
 
     logger.info(
-        "ML walk-forward: %d folds, OOS samples=%d, OOS AUC=%s",
+        "ML walk-forward: %d folds, OOS samples=%d, AUC=%s, P@10=%s",
         len(fold_results), int(oos_mask.sum()),
         f"{oos_auc:.4f}" if oos_auc is not None else "N/A",
+        f"{oos_precision_top10:.1f}%" if oos_precision_top10 is not None else "N/A",
     )
 
     # ── Final production model: train on ALL data ─────────────────────────
     final_model = _train_lgbm(X, y)
 
     y_pred_all = final_model.predict(X)
-    insample_auc = round(float(roc_auc_score(y, y_pred_all)), 4)
+    insample_auc = (
+        round(float(roc_auc_score(y, y_pred_all)), 4)
+        if len(set(y)) > 1 else None
+    )
 
     importance = final_model.feature_importance(importance_type="gain")
     importance_pct = (importance / importance.sum() * 100).round(1)
@@ -435,18 +477,21 @@ def train_model() -> dict:
     os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
     final_model.save_model(MODEL_PATH)
 
-    pos_count = int(y.sum())
     meta = {
         "trained_at": trading_dates[-1] if trading_dates else "",
+        "model_type": "classification_triple_barrier",
         "train_period": {
             "start": backtest_dates[0] if backtest_dates else "",
             "end": backtest_dates[-1] if backtest_dates else "",
         },
         "total_samples": len(y),
-        "positive_samples": pos_count,
-        "positive_rate": round(float(y.mean()) * 100, 1),
-        "auc_insample": insample_auc,
-        "auc_oos": oos_auc,
+        "positive_samples": int(y.sum()),
+        "positive_rate": round(pos_rate, 1),
+        "metrics": {
+            "insample_auc": insample_auc,
+            "oos_auc": oos_auc,
+            "oos_precision_top10": oos_precision_top10,
+        },
         "walk_forward": {
             "n_folds": len(fold_results),
             "purge_gap_days": PURGE_GAP_DAYS,
@@ -455,30 +500,36 @@ def train_model() -> dict:
             "oos_samples": int(oos_mask.sum()),
             "folds": fold_results,
         },
-        "scale_pos_weight": round(
-            (len(y) - pos_count) / pos_count if pos_count > 0 else 1.0, 2,
-        ),
+        "triple_barrier": {
+            "upper_pct": UPPER_BARRIER_PCT,
+            "lower_pct": LOWER_BARRIER_PCT,
+            "max_holding_days": MAX_HOLDING_DAYS,
+        },
         "feature_importance": feature_importance,
         "feature_names": FEATURE_NAMES,
-        "forward_days": FORWARD_DAYS,
-        "excess_threshold": EXCESS_RETURN_THRESHOLD,
+        "tier_thresholds": TIER_THRESHOLDS,
     }
     with open(META_PATH, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
     logger.info(
-        "ML train complete: %d samples, OOS AUC=%s, IS AUC=%.4f, %d folds, saved to %s",
-        len(y), f"{oos_auc:.4f}" if oos_auc is not None else "N/A",
-        insample_auc, len(fold_results), MODEL_PATH,
+        "ML train complete: %d samples, pos_rate=%.1f%%, OOS AUC=%s, P@10=%s, saved to %s",
+        len(y), pos_rate,
+        f"{oos_auc:.4f}" if oos_auc is not None else "N/A",
+        f"{oos_precision_top10:.1f}%" if oos_precision_top10 is not None else "N/A",
+        MODEL_PATH,
     )
 
     return {
         "status": "ok",
         "total_samples": len(y),
-        "positive_samples": pos_count,
-        "positive_rate": round(float(y.mean()) * 100, 1),
-        "auc_insample": insample_auc,
-        "auc_oos": oos_auc,
+        "positive_samples": int(y.sum()),
+        "positive_rate": round(pos_rate, 1),
+        "metrics": {
+            "insample_auc": insample_auc,
+            "oos_auc": oos_auc,
+            "oos_precision_top10": oos_precision_top10,
+        },
         "walk_forward": {
             "n_folds": len(fold_results),
             "folds": fold_results,
@@ -490,10 +541,19 @@ def train_model() -> dict:
 
 # ── Prediction ──────────────────────────────────────────────────────────────
 
+def _assign_tier(probability_pct: float) -> str:
+    """Assign recommendation tier based on breakout probability (%)."""
+    if probability_pct >= TIER_THRESHOLDS["high"]:
+        return "high"
+    if probability_pct >= TIER_THRESHOLDS["medium"]:
+        return "medium"
+    return "low"
+
+
 def predict_today() -> dict:
     """Run inference on the latest snapshot using the trained model.
 
-    Returns dict with ranked predictions (symbol, name, probability, close, change_pct).
+    Returns dict with ranked predictions (symbol, name, breakout_probability, tier, ...).
     """
     import lightgbm as lgb
 
@@ -507,7 +567,6 @@ def predict_today() -> dict:
         with open(META_PATH, "r", encoding="utf-8") as f:
             meta = json.load(f)
 
-    # Load latest data
     (
         trading_dates, prices, companies,
         inst_data, revenue_data, shareholder_data,
@@ -535,7 +594,6 @@ def predict_today() -> dict:
         if len(history) < 60:
             continue
 
-        # MA200 filter
         hist_fwd = list(reversed(history))
         closes = [h["close"] for h in hist_fwd if h.get("close") is not None]
         if len(closes) >= 200:
@@ -551,19 +609,20 @@ def predict_today() -> dict:
         features = _extract_features(enriched)
 
         X = np.array([features], dtype=np.float64)
-        prob = model.predict(X)[0]
+        prob_pct = float(model.predict(X)[0]) * 100
 
         company = companies.get(sym, {})
         predictions.append({
             "symbol": sym,
             "name": company.get("name", ""),
-            "probability": round(float(prob) * 100, 1),
+            "breakout_probability": round(prob_pct, 1),
+            "tier": _assign_tier(prob_pct),
             "close": row.get("close", 0),
             "change_pct": row.get("change_pct", 0),
             "volume": row.get("volume", 0),
         })
 
-    predictions.sort(key=lambda x: x["probability"], reverse=True)
+    predictions.sort(key=lambda x: x["breakout_probability"], reverse=True)
 
     return {
         "status": "ok",
@@ -571,11 +630,14 @@ def predict_today() -> dict:
         "total_stocks": len(predictions),
         "top_picks": predictions[:30],
         "model_info": {
+            "model_type": "classification_triple_barrier",
             "train_period": meta.get("train_period", {}),
             "total_samples": meta.get("total_samples", 0),
             "positive_rate": meta.get("positive_rate", 0),
-            "auc_insample": meta.get("auc_insample", 0),
+            "metrics": meta.get("metrics", {}),
             "feature_importance": meta.get("feature_importance", []),
+            "tier_thresholds": TIER_THRESHOLDS,
+            "triple_barrier": meta.get("triple_barrier", {}),
         },
     }
 
@@ -592,9 +654,12 @@ def get_model_status() -> dict:
 
     return {
         "trained": True,
+        "model_type": meta.get("model_type", "unknown"),
         "train_period": meta.get("train_period", {}),
         "total_samples": meta.get("total_samples", 0),
         "positive_rate": meta.get("positive_rate", 0),
-        "auc_insample": meta.get("auc_insample", 0),
+        "metrics": meta.get("metrics", {}),
         "feature_importance": meta.get("feature_importance", []),
+        "tier_thresholds": meta.get("tier_thresholds", {}),
+        "triple_barrier": meta.get("triple_barrier", {}),
     }
