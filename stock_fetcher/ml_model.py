@@ -123,15 +123,17 @@ def _enrich_stock(
     result.update(ext)
 
     # 法人籌碼去量綱化：除以 5 日總成交量，保留方向性
+    # 單位校正：institutional_trading 數值單位為「股」，daily_prices.volume 單位為「張」
+    # 需把法人數據除以 1000 換算成張後才能與成交量同單位比較
     avg_vol = result.get("avg_vol_5d")
     if avg_vol and avg_vol > 0:
         total_vol_5d = avg_vol * 5
-        fnet = result.get("foreign_net_5d") or 0
-        tnet = result.get("trust_net_5d") or 0
-        result["foreign_net_5d_norm"] = round(fnet / total_vol_5d * 100, 4)
-        result["trust_net_5d_norm"] = round(tnet / total_vol_5d * 100, 4)
+        fnet_lots = (result.get("foreign_net_5d") or 0) / 1000  # 股 → 張
+        tnet_lots = (result.get("trust_net_5d") or 0) / 1000
+        result["foreign_net_5d_norm"] = round(fnet_lots / total_vol_5d * 100, 4)
+        result["trust_net_5d_norm"] = round(tnet_lots / total_vol_5d * 100, 4)
         # inst_volume_ratio：法人關注度（不分方向，衡量法人在量能中的參與度）
-        result["inst_volume_ratio"] = round((abs(fnet) + abs(tnet)) / total_vol_5d * 100, 4)
+        result["inst_volume_ratio"] = round((abs(fnet_lots) + abs(tnet_lots)) / total_vol_5d * 100, 4)
 
     return result
 

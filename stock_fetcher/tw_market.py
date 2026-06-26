@@ -1280,12 +1280,13 @@ def _rank_stocks_with_history(
         ))
 
     # Compute inst_volume_ratio (needs both multi-day and extended data)
+    # 單位校正：法人數值為「股」、avg_vol_5d 為「張」，需除以 1000 對齊單位
     for s in eligible:
         avg_vol = s.get("avg_vol_5d")
-        fnet = abs(s.get("foreign_net_5d", 0) or 0)
-        tnet = abs(s.get("trust_net_5d", 0) or 0)
+        fnet_lots = abs(s.get("foreign_net_5d", 0) or 0) / 1000
+        tnet_lots = abs(s.get("trust_net_5d", 0) or 0) / 1000
         if avg_vol and avg_vol > 0:
-            s["inst_volume_ratio"] = round((fnet + tnet) / (avg_vol * 5) * 100, 4)
+            s["inst_volume_ratio"] = round((fnet_lots + tnet_lots) / (avg_vol * 5) * 100, 4)
 
     w = SCREENER_CONFIG["weights"]
 
