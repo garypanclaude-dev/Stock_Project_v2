@@ -691,16 +691,19 @@ def _fetch_tpex_institutional(target_date: date) -> list[dict]:
 
 
 def _parse_tpex_institutional_row(row: list) -> dict | None:
-    """Parse TPEX 3itrade row.
+    """Parse TPEX 3itrade row（共 24 欄，與 TWSE T86 欄位順序不同）.
 
     Fields: [0] code, [1] name,
-            [2] foreign_buy, [3] foreign_sell, [4] foreign_net,
-            [5] foreign_dealer_buy, [6] foreign_dealer_sell, [7] foreign_dealer_net,
-            [8] trust_buy, [9] trust_sell, [10] trust_net,
-            [11] dealer_buy, [12] dealer_sell, [13] dealer_net,
-            [14] dealer_self_buy, [15] dealer_self_sell, [16] dealer_self_net,
-            [17] dealer_hedge_buy, [18] dealer_hedge_sell, [19] dealer_hedge_net,
-            [20] total_net
+            [2-4]   外資不含自營：buy / sell / net
+            [5-7]   外資自營商：buy / sell / net
+            [8-10]  外資合計：buy / sell / net
+            [11-13] 投信：buy / sell / net
+            [14-16] 自營商(自行買賣)：buy / sell / net
+            [17-19] 自營商(避險)：buy / sell / net
+            [20-22] 自營商合計：buy / sell / net
+            [23]    三大法人買賣超合計
+
+    foreign_net 採「不含自營」(row[4]) 以對齊 TWSE T86 的慣例。
     """
     try:
         code = str(row[0]).strip()
@@ -708,15 +711,15 @@ def _parse_tpex_institutional_row(row: list) -> dict | None:
             return None
 
         return {
-            "symbol": f"{code}.TW",
+            "symbol":       f"{code}.TW",
             "foreign_buy":  _parse_tw_int(row[2]),
             "foreign_sell": _parse_tw_int(row[3]),
             "foreign_net":  _parse_tw_int(row[4]),
-            "trust_buy":    _parse_tw_int(row[8]),
-            "trust_sell":   _parse_tw_int(row[9]),
-            "trust_net":    _parse_tw_int(row[10]),
-            "dealer_net":   _parse_tw_int(row[13]) if len(row) > 13 else None,
-            "total_net":    _parse_tw_int(row[20]) if len(row) > 20 else None,
+            "trust_buy":    _parse_tw_int(row[11]),
+            "trust_sell":   _parse_tw_int(row[12]),
+            "trust_net":    _parse_tw_int(row[13]),
+            "dealer_net":   _parse_tw_int(row[22]) if len(row) > 22 else None,
+            "total_net":    _parse_tw_int(row[23]) if len(row) > 23 else None,
         }
     except (IndexError, ValueError, TypeError):
         return None

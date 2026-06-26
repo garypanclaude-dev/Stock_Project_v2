@@ -1268,23 +1268,60 @@ function escHtml(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').rep
 // ── ML Prediction tab ───────────────────────────────────────────────────────
 let mlLoaded = false;
 let mlTraining = false;
+let mlSelectedModel = 'momentum';   // 'momentum' | 'reversal'
+
+const ML_MODEL_LABELS = {
+  momentum: { name: '動能延續', probLabel: '動能延續機率', desc: '抓延續段（趨勢中的下一波）' },
+  reversal: { name: '起漲',     probLabel: '起漲機率',     desc: '抓糾結後第一根放量 K' },
+};
+
+function renderMLModelToggle() {
+  const opts = ['momentum', 'reversal'].map(m => {
+    const active = m === mlSelectedModel;
+    const cls = active
+      ? 'bg-blue-600 text-white shadow-sm'
+      : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200';
+    return `<button onclick="setMLModel('${m}')" ${mlTraining ? 'disabled' : ''}
+      class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${cls}">
+      ${ML_MODEL_LABELS[m].name}
+    </button>`;
+  }).join('');
+  return `
+    <div class="flex items-center justify-between mb-4 pb-3 border-b border-slate-700/60">
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-slate-500">模型：</span>
+        <div class="inline-flex gap-1 bg-slate-900/50 p-1 rounded-xl border border-slate-700">
+          ${opts}
+        </div>
+      </div>
+      <span class="text-xs text-slate-600 italic">${ML_MODEL_LABELS[mlSelectedModel].desc}</span>
+    </div>`;
+}
+
+function setMLModel(model) {
+  if (mlTraining || model === mlSelectedModel) return;
+  mlSelectedModel = model;
+  mlLoaded = false;
+  loadML();
+}
 
 async function loadML() {
   const el = document.getElementById('ml-content');
-  el.innerHTML = '<div class="text-center text-slate-500 text-sm py-8">檢查模型狀態…</div>';
+  const toggle = renderMLModelToggle();
+  el.innerHTML = toggle + '<div class="text-center text-slate-500 text-sm py-8">檢查模型狀態…</div>';
 
   try {
-    const statusRes = await fetch('/api/ml/status');
+    const statusRes = await fetch(`/api/ml/status?model=${mlSelectedModel}`);
     if (!statusRes.ok) throw new Error('Status API error');
     const status = await statusRes.json();
 
     if (!status.trained) {
-      el.innerHTML = renderMLNoModel();
+      el.innerHTML = toggle + renderMLNoModel();
       return;
     }
 
-    el.innerHTML = '<div class="text-center text-slate-500 text-sm py-8">執行模型推論中…</div>';
-    const predRes = await fetch('/api/ml/predict');
+    el.innerHTML = toggle + '<div class="text-center text-slate-500 text-sm py-8">執行模型推論中…</div>';
+    const predRes = await fetch(`/api/ml/predict?model=${mlSelectedModel}`);
     if (!predRes.ok) {
       const err = await predRes.json().catch(() => ({}));
       throw new Error(err.detail || 'Predict API error');
@@ -1294,15 +1331,16 @@ async function loadML() {
     renderMLResults(data);
   } catch (e) {
     console.error('ML load failed:', e);
-    el.innerHTML = `<div class="text-center text-red-400 text-sm py-8">ML 載入失敗：${escHtml(e.message)}</div>`;
+    el.innerHTML = toggle + `<div class="text-center text-red-400 text-sm py-8">ML 載入失敗：${escHtml(e.message)}</div>`;
   }
 }
 
 function renderMLNoModel() {
+  const label = ML_MODEL_LABELS[mlSelectedModel];
   return `
     <div class="text-center py-12">
       <div class="text-4xl mb-3">🤖</div>
-      <p class="text-slate-400 text-sm mb-4">尚未訓練 ML 模型</p>
+      <p class="text-slate-400 text-sm mb-4">尚未訓練「${label.name}」模型</p>
       <button onclick="trainML()" id="ml-train-btn"
         class="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 px-4 py-2 rounded-lg font-semibold text-sm transition-colors">
         開始訓練
@@ -1316,15 +1354,16 @@ async function trainML() {
   mlTraining = true;
 
   const el = document.getElementById('ml-content');
-  el.innerHTML = `
+  const label = ML_MODEL_LABELS[mlSelectedModel];
+  el.innerHTML = renderMLModelToggle() + `
     <div class="text-center py-12">
       <div class="spin w-10 h-10 rounded-full border-4 border-blue-500 border-t-transparent mx-auto mb-4"></div>
-      <p class="text-slate-400 text-sm">模型訓練中，請稍候…</p>
+      <p class="text-slate-400 text-sm">「${label.name}」模型訓練中，請稍候…</p>
       <p class="text-xs text-slate-600 mt-1">正在計算所有股票的歷史因子並訓練 LightGBM</p>
     </div>`;
 
   try {
-    const res = await fetch('/api/ml/train', { method: 'POST' });
+    const res = await fetch(`/api/ml/train?model=${mlSelectedModel}`, { method: 'POST' });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || 'Training failed');
@@ -1336,7 +1375,7 @@ async function trainML() {
   } catch (e) {
     mlTraining = false;
     console.error('ML training failed:', e);
-    el.innerHTML = `
+    el.innerHTML = renderMLModelToggle() + `
       <div class="text-center py-12">
         <p class="text-red-400 text-sm mb-4">訓練失敗：${escHtml(e.message)}</p>
         <button onclick="trainML()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg text-sm transition-colors">重試</button>
@@ -1348,6 +1387,7 @@ function renderMLResults(data) {
   const el = document.getElementById('ml-content');
   const info = data.model_info || {};
   const picks = data.top_picks || [];
+  const label = ML_MODEL_LABELS[mlSelectedModel];
 
   const metrics = info.metrics || {};
   const infoHtml = `
@@ -1390,7 +1430,7 @@ function renderMLResults(data) {
   // Prediction table
   const tableHtml = picks.length ? `
     <div class="flex items-center justify-between mb-2">
-      <h3 class="text-xs font-semibold text-slate-400">預測排名 — 起漲機率 Top 30</h3>
+      <h3 class="text-xs font-semibold text-slate-400">預測排名 — ${label.probLabel} Top 30</h3>
       <button onclick="trainML()" id="ml-retrain-btn" ${mlTraining?'disabled':''}
         class="text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1 rounded-lg text-slate-300 transition">
         重新訓練
@@ -1402,7 +1442,7 @@ function renderMLResults(data) {
         <th class="py-2 px-2 text-left font-medium w-10">#</th>
         <th class="py-2 px-2 text-left font-medium">代號</th>
         <th class="py-2 px-2 text-left font-medium">名稱</th>
-        <th class="py-2 px-2 text-right font-medium">起漲機率%</th>
+        <th class="py-2 px-2 text-right font-medium">${label.probLabel}%</th>
         <th class="py-2 px-2 text-center font-medium">推薦</th>
         <th class="py-2 px-2 text-right font-medium">收盤價</th>
         <th class="py-2 px-2 text-right font-medium">漲跌%</th>
@@ -1429,7 +1469,7 @@ function renderMLResults(data) {
     </table>
     </div>` : '<div class="text-slate-500 text-sm text-center py-6">無預測結果</div>';
 
-  el.innerHTML = infoHtml + fiHtml + tableHtml;
+  el.innerHTML = renderMLModelToggle() + infoHtml + fiHtml + tableHtml;
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────

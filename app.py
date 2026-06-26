@@ -340,23 +340,45 @@ async def get_batch_quotes(
 
 
 # ── ML model ─────────────────────────────────────────────────────────────────
+_ML_MODEL_CHOICES = ("momentum", "reversal")
+
+
+def _resolve_ml_module(model: str):
+    """Return the ml package module matching the requested model name."""
+    if model not in _ML_MODEL_CHOICES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown model '{model}'. Use one of: {', '.join(_ML_MODEL_CHOICES)}",
+        )
+    if model == "reversal":
+        from stock_fetcher.ml import reversal as mod
+    else:
+        from stock_fetcher.ml import momentum as mod
+    return mod
+
+
 @app.get("/api/ml/status")
-async def get_ml_status() -> dict:
+async def get_ml_status(model: str = Query("momentum")) -> dict:
     try:
-        from stock_fetcher.ml_model import get_model_status
-        return await asyncio.to_thread(get_model_status)
+        mod = _resolve_ml_module(model)
+        result = await asyncio.to_thread(mod.get_model_status)
+        result["model"] = model
+        return result
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("ML status error")
         raise HTTPException(status_code=502, detail="ML status check failed") from exc
 
 
 @app.post("/api/ml/train")
-async def train_ml_model() -> dict:
+async def train_ml_model(model: str = Query("momentum")) -> dict:
     try:
-        from stock_fetcher.ml_model import train_model
-        result = await asyncio.to_thread(train_model)
+        mod = _resolve_ml_module(model)
+        result = await asyncio.to_thread(mod.train_model)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
+        result["model"] = model
         return result
     except HTTPException:
         raise
@@ -366,12 +388,13 @@ async def train_ml_model() -> dict:
 
 
 @app.get("/api/ml/predict")
-async def get_ml_predictions() -> dict:
+async def get_ml_predictions(model: str = Query("momentum")) -> dict:
     try:
-        from stock_fetcher.ml_model import predict_today
-        result = await asyncio.to_thread(predict_today)
+        mod = _resolve_ml_module(model)
+        result = await asyncio.to_thread(mod.predict_today)
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
+        result["model"] = model
         return result
     except HTTPException:
         raise
