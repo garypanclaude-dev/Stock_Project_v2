@@ -66,7 +66,6 @@ def _extract_features(stock: dict) -> list[float | None]:
         "near_breakout": stock.get("near_breakout"),
         "price_position": stock.get("price_position"),
         "tangled_ma": stock.get("tangled_ma"),
-        "close_to_ma200_ratio": stock.get("close_to_ma200_ratio"),
         "liquidity_sweep": stock.get("liquidity_sweep"),
         "obv_divergence": stock.get("obv_divergence"),
         "volume_contraction": stock.get("volume_contraction"),

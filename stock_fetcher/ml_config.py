@@ -55,9 +55,9 @@ META_PATH = os.path.join(MODEL_DIR, "ml_model_meta.json")
 CALIBRATOR_PATH = os.path.join(MODEL_DIR, "ml_calibrator.pkl")
 
 # ── 機率校準 ──────────────────────────────────────────────────────────────
-# is_unbalance=True 會系統性拉高預測機率，使用 Isotonic Regression 校正
-# 校準器以 walk-forward OOS 預測為訓練資料
-ENABLE_CALIBRATION = True
+# v7.3 起關閉 calibrator，直接呈現模型原始輸出
+# （Triple-Barrier 定義：10 個交易日內絕對漲幅觸及 +10% 的機率）
+ENABLE_CALIBRATION = False
 
 # ── 特徵清單（原始值，非百分位） ──────────────────────────────────────────
 FEATURE_NAMES = [
@@ -70,7 +70,6 @@ FEATURE_NAMES = [
     "near_breakout",
     "price_position",
     "tangled_ma",
-    "close_to_ma200_ratio",
     "liquidity_sweep",
     "obv_divergence",
     "volume_contraction",
