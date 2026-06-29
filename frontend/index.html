@@ -14,8 +14,7 @@
 <!-- ═══ HEADER ═══════════════════════════════════════════════════════════════ -->
 <header class="bg-slate-800/80 backdrop-blur border-b border-slate-700 sticky top-0 z-50">
   <div class="max-w-[1440px] mx-auto px-4 py-3 flex items-center gap-3">
-    <!-- Watchlist toggle -->
-    <button onclick="toggleSidebar()" title="Watchlist"
+    <button data-action="toggle-sidebar" title="Watchlist"
       class="p-1.5 rounded-lg hover:bg-slate-700 transition-colors shrink-0">
       <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <path d="M4 6h16M4 12h16M4 18h16"/>
@@ -33,17 +32,15 @@
       placeholder="e.g. AAPL"
       class="w-24 bg-slate-900 border border-slate-600 rounded-lg px-3 py-1.5
              text-white font-mono text-sm focus:outline-none focus:ring-2
-             focus:ring-blue-500 focus:border-transparent transition"
-      onkeydown="if(event.key==='Enter') analyze()" />
+             focus:ring-blue-500 focus:border-transparent transition" />
 
-    <button onclick="analyze()"
+    <button data-action="analyze"
       class="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 px-3 py-1.5
              rounded-lg font-semibold text-sm transition-colors shrink-0">
       分析 ↵
     </button>
 
-    <!-- Add to watchlist -->
-    <button onclick="addCurrentToWatchlist()" title="加入自選"
+    <button data-action="add-to-watchlist" title="加入自選"
       class="p-1.5 rounded-lg hover:bg-slate-700 transition-colors shrink-0">
       <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <path d="M12 5v14M5 12h14"/>
@@ -54,7 +51,7 @@
 
     <label class="flex items-center gap-2 cursor-pointer select-none">
       <span class="text-xs text-slate-400">LIVE</span>
-      <div class="relative" onclick="toggleMock()">
+      <div class="relative" data-action="toggle-mock">
         <div id="toggle-track" class="w-10 h-5 rounded-full transition-colors duration-200 bg-amber-500"></div>
         <div id="toggle-dot" class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 translate-x-5"></div>
       </div>
@@ -64,307 +61,55 @@
   </div>
 </header>
 
+<!-- ═══ TOP TABS（頂層 view 切換器） ═══════════════════════════════════════════ -->
+<nav class="bg-slate-850 border-b border-slate-700" style="background:#0d1520">
+  <div class="max-w-[1440px] mx-auto px-4">
+    <div id="top-tabs" class="flex gap-1 overflow-x-auto no-scrollbar">
+      <button data-view="stock"             class="px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-colors text-slate-400 hover:text-slate-200">個股分析</button>
+      <button data-view="screener"          class="px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-colors text-slate-400 hover:text-slate-200">🏆 潛力選股</button>
+      <button data-view="strategy-backtest" class="px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-colors text-slate-400 hover:text-slate-200">策略回測</button>
+      <button data-view="sector-heatmap"    class="px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-colors text-slate-400 hover:text-slate-200">產業熱度</button>
+      <button data-view="etf-compare"       class="px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-colors text-slate-400 hover:text-slate-200">ETF 比較</button>
+      <button data-view="dividend-dca"      class="px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-colors text-slate-400 hover:text-slate-200">高股息定期定額</button>
+    </div>
+  </div>
+</nav>
+
 <!-- ═══ BODY (sidebar + main) ═════════════════════════════════════════════════ -->
 <div class="flex flex-1 overflow-hidden">
 
-  <!-- ── WATCHLIST SIDEBAR ─────────────────────────────────────────────────── -->
   <aside id="wl-sidebar" class="wl-sidebar shrink-0 bg-slate-850 border-r border-slate-700 flex flex-col overflow-hidden" style="background:#0d1520">
     <div class="px-3 py-3 border-b border-slate-700 flex items-center justify-between">
       <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">自選股清單</h2>
-      <button onclick="refreshWatchlist()" title="重新整理" class="p-1 rounded hover:bg-slate-700 transition">
+      <button data-action="wl-refresh" title="重新整理" class="p-1 rounded hover:bg-slate-700 transition">
         <svg id="wl-refresh-icon" class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15"/>
         </svg>
       </button>
     </div>
 
-    <div id="wl-list" class="flex-1 overflow-y-auto">
-      <!-- filled by JS -->
-    </div>
+    <div id="wl-list" class="flex-1 overflow-y-auto"></div>
 
-    <!-- Quick add -->
     <div class="px-3 py-2 border-t border-slate-700">
       <div class="flex gap-1.5">
         <input id="wl-add-input" type="text" placeholder="新增代號…" spellcheck="false" maxlength="10"
           class="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-2 py-1
-                 text-xs text-white font-mono uppercase focus:outline-none focus:ring-1 focus:ring-blue-500"
-          onkeydown="if(event.key==='Enter') addFromInput()" />
-        <button onclick="addFromInput()"
+                 text-xs text-white font-mono uppercase focus:outline-none focus:ring-1 focus:ring-blue-500" />
+        <button data-action="wl-add"
           class="bg-blue-600 hover:bg-blue-500 px-2 py-1 rounded-lg text-xs font-semibold transition-colors">+</button>
       </div>
     </div>
   </aside>
 
-  <!-- ── MAIN CONTENT ──────────────────────────────────────────────────────── -->
   <main class="flex-1 overflow-y-auto">
     <div class="max-w-screen-xl mx-auto w-full px-6 py-6">
-
-      <!-- Loading -->
-      <div id="state-loading" class="hidden flex-col items-center justify-center h-72 gap-4">
-        <div class="spin w-10 h-10 rounded-full border-4 border-blue-500 border-t-transparent"></div>
-        <p class="text-slate-400 text-sm">Fetching market data…</p>
-      </div>
-
-      <!-- Error -->
-      <div id="state-error" class="hidden bg-red-950/40 border border-red-500/30 rounded-2xl p-8 text-center mt-10">
-        <p class="text-4xl mb-3">⚠️</p>
-        <p id="error-msg" class="text-red-400 font-medium"></p>
-      </div>
-
-      <!-- Dashboard -->
-      <div id="dashboard" class="space-y-5">
-
-        <!-- ROW 0: Score card -->
-        <div id="score-card" class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
-          <div class="flex flex-col lg:flex-row gap-6">
-            <!-- Donut chart -->
-            <div class="flex flex-col items-center justify-center shrink-0" style="width:140px">
-              <div style="position:relative; width:120px; height:120px">
-                <canvas id="score-donut"></canvas>
-                <div class="absolute inset-0 flex flex-col items-center justify-center">
-                  <span id="score-number" class="text-3xl font-extrabold tabular-nums">–</span>
-                  <span id="score-label" class="text-xs font-semibold text-slate-400">–</span>
-                </div>
-              </div>
-            </div>
-            <!-- Sub-scores + commentary -->
-            <div class="flex-1 min-w-0">
-              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">綜合投資評分</h2>
-              <div id="sub-scores" class="space-y-2.5 mb-4">
-                <!-- filled by JS -->
-              </div>
-              <div id="commentary-box" class="bg-slate-900/50 rounded-xl p-3 border border-slate-700">
-                <p id="commentary-text" class="text-sm text-slate-300 leading-relaxed">–</p>
-              </div>
-              <p class="text-xs text-slate-600 mt-2">以上僅為分析參考，不構成投資建議，投資決策請自行評估風險。</p>
-            </div>
-          </div>
-        </div>
-
-        <!-- ROW 1: Price + Valuation -->
-        <div class="grid grid-cols-5 gap-5">
-          <div id="price-card" class="col-span-5 lg:col-span-3 bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
-            <div class="flex items-start justify-between gap-4">
-              <div>
-                <div class="flex items-center gap-2 mb-1">
-                  <span id="h-symbol" class="text-2xl font-extrabold tracking-tight">AAPL</span>
-                  <span id="h-currency" class="text-xs bg-slate-700 text-slate-400 px-2 py-0.5 rounded-md font-mono">USD</span>
-                  <span id="h-sector" class="text-xs bg-slate-700 text-slate-400 px-2 py-0.5 rounded-md"></span>
-                  <span id="h-mock-tag" class="text-xs bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-md hidden">MOCK</span>
-                </div>
-                <div class="flex flex-wrap items-baseline gap-3">
-                  <span id="h-price" class="text-4xl font-extrabold tabular-nums">–</span>
-                  <span id="h-change" class="text-lg font-semibold text-slate-500">–</span>
-                </div>
-                <div class="flex gap-4 mt-2 text-xs text-slate-500 items-center flex-wrap">
-                  <span>52W High: <strong id="h-52h" class="text-slate-300">–</strong></span>
-                  <span>52W Low: <strong id="h-52l" class="text-slate-300">–</strong></span>
-                  <span>Beta: <strong id="h-beta" class="text-slate-300">–</strong></span>
-                  <span id="h-ma-align" class="text-xs font-semibold px-2 py-0.5 rounded-md border border-slate-600 hidden">–</span>
-                </div>
-              </div>
-              <div class="text-right shrink-0">
-                <div class="text-xs text-slate-500 mb-0.5">Market Cap</div>
-                <div id="h-mcap" class="text-sm font-bold text-slate-200">–</div>
-                <div class="text-xs text-slate-500 mt-2">Prev. Close</div>
-                <div id="h-prev" class="text-sm font-medium text-slate-300">–</div>
-              </div>
-            </div>
-          </div>
-          <div class="col-span-5 lg:col-span-2 bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
-            <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">估值指標</h2>
-            <div class="grid grid-cols-3 gap-x-4 gap-y-3" id="valuation-grid"></div>
-          </div>
-        </div>
-
-        <!-- ROW 2: Charts + Right column -->
-        <div class="grid grid-cols-5 gap-5">
-          <div class="col-span-5 lg:col-span-3 flex flex-col gap-5">
-
-            <!-- Period + overlay controls -->
-            <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700 fade-in">
-              <div class="flex flex-wrap items-center gap-3">
-                <span class="text-xs text-slate-500 font-semibold uppercase mr-1">Period</span>
-                <div id="period-btns" class="flex gap-1.5">
-                  <button class="period-btn text-xs px-3 py-1 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600" data-p="1M">1M</button>
-                  <button class="period-btn text-xs px-3 py-1 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600 active" data-p="3M">3M</button>
-                  <button class="period-btn text-xs px-3 py-1 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600" data-p="6M">6M</button>
-                  <button class="period-btn text-xs px-3 py-1 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600" data-p="1Y">1Y</button>
-                  <button class="period-btn text-xs px-3 py-1 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600" data-p="YTD">YTD</button>
-                </div>
-                <div class="w-px h-5 bg-slate-600 mx-1"></div>
-                <span class="text-xs text-slate-500 font-semibold uppercase mr-1">Overlay</span>
-                <div id="overlay-chips" class="flex flex-wrap gap-1.5">
-                  <span class="indicator-chip text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400 active" data-key="ma5">MA5</span>
-                  <span class="indicator-chip text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400 active" data-key="ma10">MA10</span>
-                  <span class="indicator-chip text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400 active" data-key="ma20">MA20</span>
-                  <span class="indicator-chip text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400" data-key="ma60">MA60</span>
-                  <span class="indicator-chip text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400" data-key="bb">BB</span>
-                  <span class="indicator-chip text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400 active" data-key="patterns">型態</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Candlestick chart (with chart-loading overlay target) -->
-            <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in relative" id="chart-wrapper">
-              <div id="chart-loading" class="chart-loading hidden">
-                <div class="spin w-6 h-6 rounded-full border-2 border-blue-500 border-t-transparent"></div>
-              </div>
-              <div style="position:relative; height:280px"><canvas id="price-chart"></canvas></div>
-              <div style="position:relative; height:48px; margin-top:6px"><canvas id="volume-chart"></canvas></div>
-            </div>
-
-            <!-- RSI -->
-            <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700 fade-in">
-              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2">RSI (14)</h2>
-              <div style="position:relative; height:120px"><canvas id="rsi-chart"></canvas></div>
-            </div>
-
-            <!-- MACD -->
-            <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700 fade-in">
-              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2">MACD (12, 26, 9)</h2>
-              <div style="position:relative; height:140px"><canvas id="macd-chart"></canvas></div>
-            </div>
-
-            <!-- KD (Stochastic) -->
-            <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700 fade-in">
-              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2">KD (9, 3, 3)</h2>
-              <div style="position:relative; height:120px"><canvas id="kd-chart"></canvas></div>
-            </div>
-
-            <!-- OBV -->
-            <div class="bg-slate-800 rounded-2xl p-4 border border-slate-700 fade-in">
-              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2">OBV (能量潮)</h2>
-              <div style="position:relative; height:90px"><canvas id="obv-chart"></canvas></div>
-            </div>
-          </div>
-
-          <!-- RIGHT column -->
-          <div class="col-span-5 lg:col-span-2 flex flex-col gap-5">
-            <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
-              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">獲利能力</h2>
-              <div id="profit-grid" class="grid grid-cols-2 gap-x-4 gap-y-3"></div>
-            </div>
-            <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
-              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">股利資訊</h2>
-              <div id="dividend-grid" class="grid grid-cols-2 gap-x-4 gap-y-3"></div>
-            </div>
-            <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
-              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">季度營收趨勢</h2>
-              <div id="quarterly-bars" class="space-y-2.5"></div>
-            </div>
-            <div id="patterns-card" class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in hidden">
-              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">近期 K 線型態</h2>
-              <div id="patterns-list" class="space-y-2"></div>
-            </div>
-
-            <!-- B9: Annual revenue YoY -->
-            <div id="annual-growth-card" class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in hidden">
-              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">年度營收成長 (YoY)</h2>
-              <div style="position:relative; height:140px"><canvas id="annual-growth-chart"></canvas></div>
-            </div>
-
-            <!-- B9: Dividend history -->
-            <div id="dividend-history-card" class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in hidden">
-              <div class="flex items-center justify-between mb-3">
-                <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">股利配發歷史</h2>
-                <span id="dividend-consecutive-badge" class="text-xs font-semibold px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hidden">–</span>
-              </div>
-              <div style="position:relative; height:130px"><canvas id="dividend-history-chart"></canvas></div>
-            </div>
-
-            <!-- B9: PE history (river) -->
-            <div id="pe-history-card" class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in hidden">
-              <div class="flex items-center justify-between mb-3">
-                <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">PE 歷史河流圖</h2>
-                <span id="pe-percentile-badge" class="text-xs font-semibold px-2 py-0.5 rounded-md border">–</span>
-              </div>
-              <div style="position:relative; height:140px"><canvas id="pe-history-chart"></canvas></div>
-              <p class="text-[10px] text-slate-600 mt-2">5 年歷史月線 / 以最新 EPS 為錨點推估歷史值，僅供相對估值參考</p>
-            </div>
-          </div>
-        </div>
-
-        <!-- ROW 3: Peer + Watchlist Comparison -->
-        <div class="grid grid-cols-2 gap-5">
-          <!-- Peer comparison -->
-          <div class="col-span-2 lg:col-span-1 bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
-            <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">同業比較</h2>
-            <div style="position:relative; height:220px"><canvas id="peer-chart"></canvas></div>
-            <div id="peer-table" class="mt-3 overflow-x-auto"></div>
-          </div>
-          <!-- Watchlist comparison -->
-          <div class="col-span-2 lg:col-span-1 bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
-            <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">自選股比較</h2>
-            <div style="position:relative; height:220px"><canvas id="watchlist-perf-chart"></canvas></div>
-            <div id="watchlist-table" class="mt-3 overflow-x-auto"></div>
-          </div>
-        </div>
-
-        <!-- ROW 4: Stock Screener + Backtest -->
-        <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 fade-in">
-          <div class="flex items-center justify-between mb-4">
-            <div class="flex items-center gap-4">
-              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-widest">🏆 潛力股篩選</h2>
-              <!-- Tab buttons -->
-              <div class="flex gap-1 bg-slate-900 rounded-lg p-0.5">
-                <button id="tab-screener" onclick="switchScreenerTab('screener')"
-                  class="screener-tab text-xs px-3 py-1 rounded-md transition font-medium bg-slate-700 text-slate-200">篩選結果</button>
-                <button id="tab-backtest" onclick="switchScreenerTab('backtest')"
-                  class="screener-tab text-xs px-3 py-1 rounded-md transition font-medium text-slate-500 hover:text-slate-300">回測分析</button>
-                <button id="tab-ml" onclick="switchScreenerTab('ml')"
-                  class="screener-tab text-xs px-3 py-1 rounded-md transition font-medium text-slate-500 hover:text-slate-300">ML 選股</button>
-              </div>
-            </div>
-            <div class="flex items-center gap-3">
-              <span id="screener-updated" class="text-xs text-slate-600"></span>
-              <button id="screener-refresh-btn" onclick="refreshScreener()" class="text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1 rounded-lg text-slate-300 transition">重新整理</button>
-            </div>
-          </div>
-
-          <!-- Tab: Screener results -->
-          <div id="panel-screener">
-            <div id="screener-table" class="overflow-x-auto"></div>
-          </div>
-
-          <!-- Tab: Backtest (forward-return analysis) -->
-          <div id="panel-backtest" class="hidden">
-            <!-- Summary cards -->
-            <div id="backtest-summary" class="mb-4"></div>
-            <!-- Horizon stats table -->
-            <div id="backtest-horizon" class="mb-4"></div>
-            <!-- Rank group chart -->
-            <div class="bg-slate-900/50 rounded-xl p-4 mb-4">
-              <h3 class="text-xs font-semibold text-slate-400 mb-2">排名分組 — 超額報酬比較</h3>
-              <div style="position:relative; height:280px"><canvas id="backtest-rank-chart"></canvas></div>
-            </div>
-            <!-- Signal details -->
-            <div>
-              <div class="flex items-center justify-between mb-2">
-                <h3 class="text-xs font-semibold text-slate-400">信號明細</h3>
-                <button onclick="toggleBacktestSignals()" class="text-xs text-slate-500 hover:text-slate-300 transition">展開/收合</button>
-              </div>
-              <div id="backtest-signals" class="overflow-x-auto max-h-96 overflow-y-auto hidden"></div>
-            </div>
-          </div>
-
-          <!-- Tab: ML Predictions -->
-          <div id="panel-ml" class="hidden">
-            <div id="ml-content">
-              <div class="text-center text-slate-500 text-sm py-8">載入中…</div>
-            </div>
-          </div>
-
-          <p class="text-xs text-slate-600 mt-3">以上僅為量化篩選結果，不構成投資建議，投資決策請自行評估風險。</p>
-        </div>
-
-      </div><!-- /dashboard -->
+      <!-- TabController 會在這裡動態建立每個 view 的 panel -->
+      <div id="view-container"></div>
     </div>
   </main>
 </div>
 
-<!-- ═══ SCRIPT ════════════════════════════════════════════════════════════════ -->
-<script src="app.js"></script>
+<script type="module" src="src/main.js"></script>
 
 </body>
 </html>

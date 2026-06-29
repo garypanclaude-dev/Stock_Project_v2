@@ -4,8 +4,8 @@
     {
       "name": "stock-insights",
       "runtimeExecutable": "uvicorn",
-      "runtimeArgs": ["app:app", "--reload", "--port", "8000"],
-      "port": 8000
+      "runtimeArgs": ["app:app", "--reload", "--port", "8001"],
+      "port": 8001
     }
   ]
 }
