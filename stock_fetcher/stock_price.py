@@ -29,9 +29,33 @@ def fetch_stock_price(symbol: str, period: str = "3M") -> dict:
 
     hist = ticker.history(
         start=start_date.strftime("%Y-%m-%d"),
-        end=end_date.strftime("%Y-%m-%d"),
+        end=(end_date + timedelta(days=1)).strftime("%Y-%m-%d"),
     )
 
+    if hist.empty:
+        raise ValueError(f"No data found for symbol: {symbol}")
+
+    # Yahoo's daily endpoint sometimes leaves the most-recent row with NaN OHLC
+    # for hours after close (TW market in particular). Backfill that row from
+    # the 1m intraday endpoint, which is the same source as fast_info.last_price.
+    last_row = hist.iloc[-1]
+    if last_row[["Open", "High", "Low", "Close"]].isna().any():
+        try:
+            intraday = ticker.history(period="2d", interval="1m")
+            if not intraday.empty:
+                target_date = hist.index[-1].date()
+                day_slice = intraday[intraday.index.date == target_date]
+                if not day_slice.empty:
+                    hist.loc[hist.index[-1], "Open"] = day_slice["Open"].iloc[0]
+                    hist.loc[hist.index[-1], "High"] = day_slice["High"].max()
+                    hist.loc[hist.index[-1], "Low"] = day_slice["Low"].min()
+                    hist.loc[hist.index[-1], "Close"] = day_slice["Close"].iloc[-1]
+                    hist.loc[hist.index[-1], "Volume"] = int(day_slice["Volume"].sum())
+        except Exception:
+            pass  # fallback: leave NaN, frontend will skip that bar
+
+    # Drop any remaining NaN OHLC rows so the frontend never receives nulls.
+    hist = hist.dropna(subset=["Open", "High", "Low", "Close"])
     if hist.empty:
         raise ValueError(f"No data found for symbol: {symbol}")
 
