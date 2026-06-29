@@ -1,7 +1,7 @@
 """Reversal (起漲) 模型參數.
 
-里程碑 2 暫時完整複製 momentum 設定，僅模型檔路徑改名以避免兩個模型互相覆蓋。
-後續里程碑會調整 Triple-Barrier、特徵子集、超參數等。
+差異化設計：僅使用 bb_squeeze + tangled_ma 兩個糾結態特徵，全樣本訓練。
+其餘參數（Triple-Barrier、Walk-Forward、超參數）暫時與 momentum 共用。
 """
 
 # ── Label 定義：Triple-Barrier Method ─────────────────────────────────────
@@ -60,10 +60,10 @@ CALIBRATOR_PATH = os.path.join(MODEL_DIR, "ml_reversal_calibrator.pkl")
 ENABLE_CALIBRATION = False
 
 # ── 特徵清單 ─────────────────────────────────────────────────────────────
-# 里程碑 3 第一步：差異化起漲型，只保留兩個與「糾結態」最直接相關的特徵
+# 差異化起漲型：只保留兩個與「糾結態」最直接相關的特徵
 #   bb_squeeze : 布林通道帶寬收斂率（越小代表波動越壓抑、越接近爆發點）
 #   tangled_ma : 均線糾結度（短中長期 MA 越貼近，代表盤整越久、力道蓄積越大）
-# 後續會再加入：bb_squeeze_persistence、ma_tangle_days、量縮持續性等專屬特徵
+# 全樣本訓練（不做 pre-filter），讓模型自己從整個市場學出糾結 → 起漲訊號
 FEATURE_NAMES = [
     "bb_squeeze",
     "tangled_ma",

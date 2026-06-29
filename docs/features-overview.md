@@ -434,7 +434,7 @@ Walk-Forward 只用於評估模型品質（產出 OOS AUC 和 Precision@Top10）
 - 兩者共用相同的底層資料與因子計算，但處理方式不同（百分位 vs 原始值）
 - 建議交叉比對：同時出現在兩個清單的股票可信度更高
 
-→ 程式碼查 [`stock_fetcher/ml_config.py`](../stock_fetcher/ml_config.py) 與 [`stock_fetcher/ml_model.py`](../stock_fetcher/ml_model.py)
+→ 程式碼查 [`stock_fetcher/ml/momentum/config.py`](../stock_fetcher/ml/momentum/config.py) 與 [`stock_fetcher/ml/momentum/model.py`](../stock_fetcher/ml/momentum/model.py)（反轉型模型在 `stock_fetcher/ml/reversal/`）；雙引擎規格詳見 [`docs/ml-models.md`](ml-models.md)
 
 ---
 

@@ -1,11 +1,9 @@
 """LightGBM binary classification model for reversal (起漲) detection.
 
-里程碑 2：暫時完整複製 momentum 模型邏輯，僅模型檔路徑透過 .config 區隔。
-後續里程碑會把以下幾項改寫為「起漲型專屬」：
-  - Triple-Barrier 三軌
-  - Pre-filter（限定糾結態股票）
-  - 特徵子集
-  - 超參數
+與 momentum 模型的差異：
+  - 特徵子集：僅使用 bb_squeeze + tangled_ma 兩個糾結態特徵
+  - 全樣本訓練（不做 pre-filter），讓模型自己學出糾結 → 起漲訊號
+  - 其餘訓練流程（Triple-Barrier、Walk-Forward、超參數）暫時與 momentum 共用
 
 Usage:
     from stock_fetcher.ml.reversal import train_model, predict_today

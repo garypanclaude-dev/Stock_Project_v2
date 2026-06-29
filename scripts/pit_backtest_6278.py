@@ -9,11 +9,11 @@ import logging
 import os
 import numpy as np
 
-from stock_fetcher.ml_model import (
+from stock_fetcher.ml.momentum.model import (
     _load_all_data, _build_dataset, _enrich_stock, _extract_features,
     _get_history_before, _assign_tier,
 )
-from stock_fetcher.ml_config import (
+from stock_fetcher.ml.momentum.config import (
     FEATURE_NAMES, WARM_UP_DAYS, MAX_HOLDING_DAYS, BENCHMARK_SYMBOL,
     MIN_VOLUME, LGBM_PARAMS,
 )
