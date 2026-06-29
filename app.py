@@ -115,7 +115,7 @@ async def get_stock_insights(
     # ── Step 1: fetch price + fundamentals in parallel ──────────────────
     from stock_fetcher import (
         fetch_stock_price, fetch_fundamentals,
-        compute_composite_score, compute_risk_metrics, detect_patterns,
+        compute_composite_score, detect_patterns,
         generate_commentary,
     )
 
@@ -143,9 +143,6 @@ async def get_stock_insights(
         patterns=patterns,
     )
 
-    # ── Step 2b: compute risk metrics (HV, MDD, ATR, stop-loss) ──────
-    risk = compute_risk_metrics(price_data["kline"], price_data["indicators"], patterns)
-
     # ── Step 3: AI commentary — graceful degradation ─────────────────
     commentary = None
     try:
@@ -164,7 +161,6 @@ async def get_stock_insights(
         "indicators": price_data["indicators"],
         "fundamentals": fundamentals,
         "score": score,
-        "risk": risk,
         "patterns": patterns,
         "commentary": commentary,
     }

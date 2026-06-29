@@ -25,7 +25,7 @@
 | A3 | 結構化 Logging | JSON formatter + request_id middleware | 小 | ⬜ 待辦 |
 | A4 | 前後端分離 | `index.html` → React + Vite | 🔴 極大 | ⬜ 待辦 |
 | A5 | Error handling 統一化 | 各 endpoint 錯誤處理不一致，抽成共用 exception handler | 小 | ⬜ 待辦 |
-| A6 | 前端 JS 拆分 | 不做 React，把 `index.html` JS 拆成模組（chart / screener / risk） | 中 | ⬜ 待辦 |
+| A6 | 前端 JS 拆分 | 不做 React，把 `index.html` JS 拆成模組（chart / screener 等） | 中 | ⬜ 待辦 |
 | A7 | Cache 策略優化 | screener 結果加 cache；可加 LRU 上限防止記憶體無限成長 | 小 | ⬜ 待辦 |
 
 ---
@@ -34,12 +34,12 @@
 
 | # | 項目 | 說明 | 工作量 | 狀態 |
 |---|------|------|--------|------|
-| B1 | 風險指標補齊 | HV、MDD、四法停損停利（ATR / 固定% / 布林 / 擺盪高低點） | 大 | ✅ 已完成 |
+| B1 | 風險指標補齊 | HV、MDD、四法停損停利（ATR / 固定% / 布林 / 擺盪高低點） | 大 | ⛔ 已棄用（2026-06-29 功能下線） |
 | B2 | 事件回顧 | 「過去 N 次財報後股價怎麼走」視覺化（個股層級） | 大 | ⬜ 待辦 |
 | B3 | AI 策略建議 | Gemini 生成具體進場價 / 停損 / 目標價 / 情境分析 | 中 | ⬜ 待辦 |
 | B4 | 定時監控與推播 | Watchlist 每日掃描 + 警報條件觸發通知 | 大 | ⬜ 待辦 |
-| B5 | 風險指標整合進評分 | HV/MDD 影響 composite score，需同步更新 `docs/composite-score.md` | 中 | ⬜ 待辦 |
-| B6 | 比較功能加入風險欄位 | peer / watchlist comparison 加上 HV、MDD 欄位 | 中 | ⬜ 待辦 |
+| B5 | 風險指標整合進評分 | HV/MDD 影響 composite score | 中 | ⛔ 已棄用（2026-06-29 風險指標下線） |
+| B6 | 比較功能加入風險欄位 | peer / watchlist comparison 加上 HV、MDD 欄位 | 中 | ⛔ 已棄用（2026-06-29 風險指標下線） |
 | B7 | 技術指標補強 | KD 隨機指標、OBV 量能、均線糾結/多頭排列 → 整合至五大功能 + 前端 | 中 | ✅ 已完成 |
 | B8 | K 線型態辨識 | 十字線、吞噬、錘子等 8 種型態 → 整合至綜合評分/風險警示/篩選/前端 | 大 | ✅ 已完成 |
 | B9 | 基本面資料擴充 | 殖利率穩定度、PE 百分位、營收 QoQ streak → 整合至評分/篩選/前端 | 中 | ✅ 已完成 |

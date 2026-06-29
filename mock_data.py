@@ -7,7 +7,6 @@ from datetime import date, timedelta
 
 from stock_fetcher.indicators import compute_all
 from stock_fetcher.scoring import compute_composite_score
-from stock_fetcher.risk import compute_risk_metrics
 from stock_fetcher.patterns import detect_patterns
 
 
@@ -236,8 +235,6 @@ def _build_stock(
         patterns=patterns,
     )
 
-    risk = compute_risk_metrics(klines, indicators, patterns)
-
     grade_label = score["grade"]["label"]
     commentary_map = {
         "強勢": "技術面多頭排列，均線呈多頭排列；基本面獲利能力穩健。短期策略建議：順勢操作，逢回佈局。",
@@ -256,7 +253,6 @@ def _build_stock(
         "indicators": indicators,
         "fundamentals": fundamentals,
         "score": score,
-        "risk": risk,
         "patterns": patterns,
         "commentary": commentary_map.get(grade_label, ""),
     }
@@ -333,8 +329,6 @@ def _build_generic(ticker: str, period: str) -> dict:
         kline=klines, patterns=patterns,
     )
 
-    risk = compute_risk_metrics(klines, indicators, patterns)
-
     return {
         "symbol": ticker,
         "period": period,
@@ -348,7 +342,6 @@ def _build_generic(ticker: str, period: str) -> dict:
         "indicators": indicators,
         "fundamentals": fund,
         "score": score,
-        "risk": risk,
         "patterns": patterns,
         "commentary": "技術面與基本面訊號交織，多空力道均衡。短期策略建議：觀望為主。",
     }

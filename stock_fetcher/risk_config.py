@@ -1,4 +1,6 @@
 """
+DEPRECATED (2026-06-29): Companion config for `risk.py`. No longer referenced by the live app.
+
 Risk metrics configuration — thresholds, multipliers, level definitions.
 Centralised to avoid hard-coding values in calculation logic.
 """

@@ -1,4 +1,7 @@
 """
+DEPRECATED (2026-06-29): Risk metrics feature has been removed from /api/stock-insights and the frontend.
+This module is retained for historical reference and possible future revival; it is no longer imported by the live app.
+
 Risk metrics — Historical Volatility, Max Drawdown, ATR, and stop-loss/take-profit suggestions.
 
 All functions are pure: they read kline lists and return dicts. No I/O, no external calls.

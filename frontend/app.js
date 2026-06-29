@@ -250,7 +250,6 @@ let scoreDonut = null;
 
 function renderDashboard(d) {
   renderScore(d.score, d.commentary);
-  renderRisk(d.risk);
   renderPriceHeader(d.latest_quote, d.is_mock, d.fundamentals);
   renderCandlestick(d.kline, d.indicators, d.patterns);
   renderVolume(d.kline);
@@ -337,112 +336,6 @@ function renderScore(score, commentary) {
     commentaryEl.textContent = 'AI 研判暫時不可用';
     commentaryEl.classList.add('text-slate-500');
   }
-}
-
-// ── Render: risk metrics ─────────────────────────────────────────────────────
-function renderRisk(risk) {
-  const card = document.getElementById('risk-card');
-  if (!risk) { card.classList.add('hidden'); return; }
-  card.classList.remove('hidden');
-
-  // Warnings (B7: technical risk alerts)
-  const warningsBox = document.getElementById('risk-warnings');
-  const warnings = risk.warnings || [];
-  if (warnings.length === 0) {
-    warningsBox.classList.add('hidden');
-    warningsBox.innerHTML = '';
-  } else {
-    warningsBox.classList.remove('hidden');
-    warningsBox.innerHTML = warnings.map(w => {
-      const bg = (w.color || '#f97316') + '20';
-      return `<div class="flex items-start gap-2 px-3 py-2 rounded-lg border" style="border-color:${w.color};background:${bg}">
-        <span class="text-base leading-none mt-0.5">⚠️</span>
-        <div>
-          <div class="text-xs font-bold" style="color:${w.color}">${w.label}</div>
-          <div class="text-xs text-slate-300 mt-0.5">${w.description}</div>
-        </div>
-      </div>`;
-    }).join('');
-  }
-
-  // HV level badge
-  const level = risk.volatility?.level || { label: '–', color: '#64748b' };
-  const badge = document.getElementById('risk-hv-badge');
-  badge.textContent = level.label;
-  badge.style.color = level.color;
-  badge.style.borderColor = level.color + '80';
-  badge.style.backgroundColor = level.color + '20';
-
-  // Volatility block
-  const hv20 = risk.volatility?.hv_20d;
-  const hv60 = risk.volatility?.hv_60d;
-  document.getElementById('risk-volatility').innerHTML = `
-    <div class="flex justify-between items-baseline">
-      <span class="text-xs text-slate-400">20 日 HV</span>
-      <span class="text-xl font-bold tabular-nums">${hv20 != null ? hv20 + '%' : '<span class="text-slate-600 text-sm">–</span>'}</span>
-    </div>
-    <div class="flex justify-between items-baseline">
-      <span class="text-xs text-slate-400">60 日 HV</span>
-      <span class="text-xl font-bold tabular-nums ${hv60==null?'text-slate-600':''}">${hv60 != null ? hv60 + '%' : '<span class="text-xs text-slate-600">資料不足</span>'}</span>
-    </div>
-  `;
-
-  // Drawdown block
-  const dd = risk.drawdown || {};
-  const ddEl = document.getElementById('risk-drawdown');
-  if (dd.mdd_pct == null) {
-    ddEl.innerHTML = '<span class="text-slate-600 text-sm">資料不足</span>';
-  } else {
-    const ddColor = dd.mdd_pct <= -30 ? '#ef4444' : dd.mdd_pct <= -15 ? '#f59e0b' : '#22c55e';
-    const recovery = dd.recovered
-      ? `<span class="text-green-400">已回復 (${dd.recovery_days} 日)</span>`
-      : `<span class="text-amber-400">尚未回復</span>`;
-    ddEl.innerHTML = `
-      <div class="text-2xl font-extrabold tabular-nums mb-1" style="color:${ddColor}">${dd.mdd_pct}%</div>
-      <div class="text-xs text-slate-500">${dd.peak_date} → ${dd.trough_date}</div>
-      <div class="text-xs text-slate-400 mt-1">距高點: <strong class="tabular-nums text-slate-200">${dd.current_drawdown_pct}%</strong></div>
-      <div class="text-xs mt-1">${recovery}</div>
-    `;
-  }
-
-  // Current + ATR block
-  const sug = risk.suggestions || {};
-  document.getElementById('risk-current').innerHTML = `
-    <div class="flex justify-between items-baseline mb-2">
-      <span class="text-xs text-slate-400">當前價</span>
-      <span class="text-xl font-bold tabular-nums">${sug.current_price != null ? '$' + sug.current_price : '–'}</span>
-    </div>
-    <div class="flex justify-between items-baseline">
-      <span class="text-xs text-slate-400">ATR(14)</span>
-      <span class="text-xl font-bold tabular-nums ${sug.atr_14==null?'text-slate-600':''}">${sug.atr_14 != null ? sug.atr_14.toFixed(2) : '–'}</span>
-    </div>
-    <p class="text-xs text-slate-600 mt-2">ATR = 平均真實波動，用於動態停損</p>
-  `;
-
-  // Four-method comparison table
-  const methods = sug.methods || {};
-  const order = ['atr_standard', 'atr_conservative', 'atr_aggressive', 'fixed_pct', 'bollinger', 'swing'];
-  const tbody = document.getElementById('risk-methods-tbody');
-  tbody.innerHTML = order.filter(k => methods[k]).map(k => {
-    const m = methods[k];
-    const rr = m.rr_ratio;
-    const rrColor = rr == null ? 'text-slate-500' : rr >= 2 ? 'text-green-400' : rr >= 1 ? 'text-amber-400' : 'text-red-400';
-    const stopCell = m.stop_loss != null ? `$${m.stop_loss}` : '–';
-    const tgtCell = m.take_profit != null ? `$${m.take_profit}` : '–';
-    const riskCell = m.risk_pct != null ? m.risk_pct.toFixed(2) + '%' : '–';
-    const rewardCell = m.reward_pct != null ? '+' + m.reward_pct.toFixed(2) + '%' : '–';
-    const rrCell = rr != null ? '1 : ' + rr.toFixed(2) : '–';
-    return `
-      <tr class="border-b border-slate-800 hover:bg-slate-900/30">
-        <td class="py-2 px-2 text-slate-300">${m.label}</td>
-        <td class="py-2 px-2 text-right tabular-nums text-red-400">${stopCell}</td>
-        <td class="py-2 px-2 text-right tabular-nums text-green-400">${tgtCell}</td>
-        <td class="py-2 px-2 text-right tabular-nums text-slate-400">${riskCell}</td>
-        <td class="py-2 px-2 text-right tabular-nums text-slate-400">${rewardCell}</td>
-        <td class="py-2 px-2 text-right tabular-nums font-bold ${rrColor}">${rrCell}</td>
-      </tr>
-    `;
-  }).join('') || '<tr><td colspan="6" class="py-3 text-center text-slate-600 text-xs">資料不足，無法計算</td></tr>';
 }
 
 // ── Render: price header ─────────────────────────────────────────────────────
