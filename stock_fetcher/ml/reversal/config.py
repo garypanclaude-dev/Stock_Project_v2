@@ -59,31 +59,12 @@ CALIBRATOR_PATH = os.path.join(MODEL_DIR, "ml_reversal_calibrator.pkl")
 # ── 機率校準 ──────────────────────────────────────────────────────────────
 ENABLE_CALIBRATION = False
 
-# ── 特徵清單（原始值，非百分位） ──────────────────────────────────────────
+# ── 特徵清單 ─────────────────────────────────────────────────────────────
+# 里程碑 3 第一步：差異化起漲型，只保留兩個與「糾結態」最直接相關的特徵
+#   bb_squeeze : 布林通道帶寬收斂率（越小代表波動越壓抑、越接近爆發點）
+#   tangled_ma : 均線糾結度（短中長期 MA 越貼近，代表盤整越久、力道蓄積越大）
+# 後續會再加入：bb_squeeze_persistence、ma_tangle_days、量縮持續性等專屬特徵
 FEATURE_NAMES = [
-    # 技術面 — 連續值
     "bb_squeeze",
-    "volume_breakout",
-    "box_breakout",
-    "squeeze_volume",
-    "avwap_dev",
-    "near_breakout",
-    "price_position",
     "tangled_ma",
-    "liquidity_sweep",
-    "obv_divergence",
-    "volume_contraction",
-    # 技術面 — KD 拆解為連續值
-    "k_value",
-    "d_value",
-    "k_minus_d",
-    # 籌碼面（法人買超已正規化 = 5日淨買超 / 5日總成交量 × 100%）
-    "trust_net_5d_norm",
-    "foreign_net_5d_norm",
-    "inst_volume_ratio",
-    "trust_streak",
-    "foreign_streak",
-    # 基本面
-    "revenue_yoy",
-    "revenue_mom",
 ]
