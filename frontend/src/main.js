@@ -17,6 +17,7 @@ import { SidebarWatchlist } from './components/sidebar-watchlist.js';
 
 import { StockView } from './views/stock-view.js';
 import { ScreenerView } from './views/screener/screener-view.js';
+import { DividendDcaView } from './views/dividend-dca/dividend-dca-view.js';
 import { PlaceholderView } from './views/placeholder-view.js';
 
 // ── 依賴注入 ─────────────────────────────────────────────────────────
@@ -35,7 +36,7 @@ const views = {
   'strategy-backtest':  new PlaceholderView({ title: '策略回測', description: '輸入買賣訊號規則，回測歷史報酬與風險指標。' }),
   'sector-heatmap':     new PlaceholderView({ title: '產業熱度',  description: '各產業 / 主題類股的資金流向、漲跌幅熱力圖。' }),
   'etf-compare':        new PlaceholderView({ title: 'ETF 比較',  description: '同類 ETF 績效、費用率、追蹤誤差、持股重疊度比較。' }),
-  'dividend-dca':       new PlaceholderView({ title: '高股息定期定額', description: '輸入投入金額、頻率與標的，估算長期累積報酬與配息現金流。' }),
+  'dividend-dca':       new DividendDcaView({ apiClient }),
 };
 
 const VIEW_TITLES = {

@@ -60,6 +60,13 @@ export class ApiClient {
   getScreener(opts)                         { return this._get('/api/stock-screener', {}, opts); }
   getMLStatus(model, opts)                  { return this._get('/api/ml/status', { model }, opts); }
 
+  // ── ETF（高股息定期定額 dividend-dca view） ──────────────────────────
+  // 注意：ETF endpoint 後端目前未實作 mock 模式，永遠直接打 yfinance + etf.db。
+  // 仍透過 _get 以保持風格一致與 abort 能力。
+  getEtfList(opts)                          { return this._get('/api/etf/list', {}, opts); }
+  getEtfDetail(symbol, opts)                { return this._get(`/api/etf/${encodeURIComponent(symbol)}/detail`, {}, opts); }
+  simulateEtfDca(body)                      { return this._postJson('/api/etf/dca-simulate', body); }
+
   // ── Job 系統（長任務統一入口） ─────────────────────────────────────
   // type ∈ "backtest" | "refresh_tw" | "ml_train" | "ml_predict"
   // 回傳 { job_id, key, status, progress, message, ... }

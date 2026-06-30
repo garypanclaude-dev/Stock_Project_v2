@@ -417,6 +417,60 @@ async def cancel_job(job_id: str) -> dict:
     return {"cancelled": True, "job_id": job_id}
 
 
+# ── ETF：高股息定期定額（dividend-dca view） ───────────────────────────────
+# 規格詳見 docs/dca-simulator.md §5。三個 endpoint：list / detail / dca-simulate。
+class DcaSimulateRequest(BaseModel):
+    symbol: str
+    monthly_amount: float = 10000
+    start_date: str
+    end_date: str | None = None
+    drip: bool = True
+    benchmark: str | None = "0050.TW"
+
+
+@app.get("/api/etf/list")
+async def etf_list() -> dict:
+    from stock_fetcher import etf_service
+    try:
+        etfs = await asyncio.to_thread(etf_service.get_list_summary)
+    except Exception as exc:
+        logger.exception("etf_list failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"etfs": etfs}
+
+
+@app.get("/api/etf/{symbol}/detail")
+async def etf_detail(symbol: str) -> dict:
+    from stock_fetcher import etf_service, etf_config
+    if etf_config.get_config(symbol) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown ETF: {symbol}")
+    try:
+        return await asyncio.to_thread(etf_service.get_detail, symbol)
+    except Exception as exc:
+        logger.exception("etf_detail(%s) failed", symbol)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/etf/dca-simulate")
+async def etf_dca_simulate(req: DcaSimulateRequest) -> dict:
+    from stock_fetcher import etf_service, etf_config
+    if etf_config.get_config(req.symbol) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown ETF: {req.symbol}")
+    if req.monthly_amount <= 0:
+        raise HTTPException(status_code=400, detail="monthly_amount must be > 0")
+    try:
+        return await asyncio.to_thread(
+            etf_service.simulate_dca,
+            req.symbol, req.monthly_amount, req.start_date,
+            req.end_date, req.drip, req.benchmark,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("etf_dca_simulate failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 _frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
 if os.path.isdir(_frontend_dir):
     app.mount("/", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
