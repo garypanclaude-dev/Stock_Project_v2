@@ -118,6 +118,9 @@ export class EtfDetailSubView extends View {
           </div>
         </div>
 
+        <!-- 異常警示 -->
+        ${this._renderAnomalies(d.anomalies || [])}
+
         <!-- 1. 概覽 -->
         ${this._renderOverview(m)}
 
@@ -134,6 +137,48 @@ export class EtfDetailSubView extends View {
 
     // 等 DOM 落地後 render charts
     this._renderCharts(d);
+  }
+
+  _renderAnomalies(list) {
+    if (!list || !list.length) return '';
+    const rows = list.map(a => {
+      const sign = a.return_pct >= 0 ? '+' : '';
+      const colorCls = a.return_pct >= 0 ? 'text-green-300' : 'text-red-300';
+      const hint = a.suggested_factor
+        ? `<span class="text-amber-200">${escHtml(a.suggested_action)}</span>`
+        : `<span class="text-slate-400">${escHtml(a.suggested_action)}</span>`;
+      return `
+        <tr class="border-b border-amber-900/40 last:border-0">
+          <td class="py-1.5 px-2 font-mono text-amber-100">${a.date}</td>
+          <td class="py-1.5 px-2 text-right tabular-nums ${colorCls}">${sign}${a.return_pct.toFixed(2)}%</td>
+          <td class="py-1.5 px-2 text-right tabular-nums text-slate-300">$${a.prev_close} → $${a.close}</td>
+          <td class="py-1.5 px-2 text-xs">${hint}</td>
+        </tr>`;
+    }).join('');
+
+    return `
+      <section class="bg-amber-900/20 border border-amber-700/40 rounded-xl p-4">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-amber-300">⚠️</span>
+          <h3 class="text-xs font-semibold text-amber-200 uppercase tracking-widest">
+            偵測到 ${list.length} 筆價格異常事件（單日 |return| ≥ 30%）
+          </h3>
+        </div>
+        <div class="text-[11px] text-amber-100/80 mb-3">
+          原始資料未修改，僅標記提醒。如為資料瑕疵（如漏掉分割調整），可手動修補後重新同步。
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead><tr class="text-amber-300/70 border-b border-amber-700/40">
+              <th class="py-1.5 px-2 text-left font-medium">事件日</th>
+              <th class="py-1.5 px-2 text-right font-medium">單日報酬</th>
+              <th class="py-1.5 px-2 text-right font-medium">前→當日收盤</th>
+              <th class="py-1.5 px-2 text-left font-medium">推測原因</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </section>`;
   }
 
   _renderOverview(m) {

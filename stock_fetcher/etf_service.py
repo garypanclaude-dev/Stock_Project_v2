@@ -18,7 +18,7 @@ from typing import Any
 
 import yfinance as yf
 
-from . import etf_config, etf_db
+from . import etf_anomaly, etf_config, etf_db
 from .cache import ttl_cache
 
 logger = logging.getLogger(__name__)
@@ -623,6 +623,7 @@ def get_detail(symbol: str) -> dict:
 
     perf = compute_performance(prices) if prices else {}
     div_stats = compute_dividend_stats(divs, meta.get("payout_frequency"))
+    anomalies = etf_anomaly.detect_price_anomalies(prices) if prices else []
 
     # 取樣縮減 price_history（每週 1 筆，避免回傳 1500+ 筆）
     sampled_prices = _downsample_prices(prices, target=400)
@@ -639,6 +640,7 @@ def get_detail(symbol: str) -> dict:
             "top": holdings,
             "sectors": sectors,
         },
+        "anomalies": anomalies,
     }
 
 
