@@ -463,10 +463,27 @@ def get_mock_screener() -> dict:
     }
 
 
-def get_mock_backtest() -> dict:
-    """Mock forward-return backtest results for frontend development."""
+def get_mock_backtest(*, reporter=None) -> dict:
+    """Mock forward-return backtest results for frontend development.
+
+    在 reporter 模式下加入分段 sleep，模擬真實任務的進度回報節奏，
+    讓前端 UI（進度條、取消按鈕）在 mock 模式下也能完整驗證。
+    """
     from statistics import median as _median
+    import time as _time
     random.seed(42)
+
+    if reporter is not None:
+        for pct, msg in [
+            (5, "載入交易日資料 …"),
+            (15, "載入價量資料 …"),
+            (30, "回測進度 30/100"),
+            (55, "回測進度 60/100"),
+            (80, "回測進度 90/100"),
+            (95, "計算統計摘要 …"),
+        ]:
+            reporter.update(pct, msg)
+            _time.sleep(0.3)
 
     forward_days = [1, 3, 5, 10, 20]
     mock_stocks = [
@@ -554,4 +571,58 @@ def get_mock_backtest() -> dict:
             "by_rank_group": by_rank_group,
         },
         "signals": signals,
+    }
+
+
+# ── Mock job 任務（給前端在 mock 模式下測試進度條與取消） ─────────────────────
+
+def _mock_run_with_progress(reporter, total_seconds: float, steps: int, label: str):
+    """共用：把 total_seconds 切成 steps 段，逐段 sleep + 回報進度。"""
+    import time as _time
+    step_dt = total_seconds / steps
+    for i in range(1, steps + 1):
+        reporter.update((i / steps) * 100, f"{label} ({i}/{steps})")
+        _time.sleep(step_dt)
+
+
+def get_mock_ml_train(model: str, *, reporter=None) -> dict:
+    """Mock ML 訓練：sleep 6 秒分 20 段回報。"""
+    if reporter is not None:
+        _mock_run_with_progress(reporter, total_seconds=6.0, steps=20, label=f"訓練 {model} 模型")
+    return {
+        "status": "ok",
+        "model": model,
+        "total_samples": 12345,
+        "positive_samples": 1234,
+        "positive_rate": 10.0,
+        "metrics": {"insample_auc": 0.78, "oos_auc": 0.62, "oos_precision_top10": 25.0},
+        "walk_forward": {"n_folds": 6, "folds": []},
+        "feature_importance": [],
+        "train_period": {"start": "2024-01-01", "end": "2026-06-01"},
+        "calibration": {"enabled": False},
+    }
+
+
+def get_mock_ml_predict(model: str, *, reporter=None) -> dict:
+    """Mock ML 推論：sleep 2 秒分 10 段。"""
+    if reporter is not None:
+        _mock_run_with_progress(reporter, total_seconds=2.0, steps=10, label=f"{model} 推論")
+    return {
+        "status": "ok",
+        "model": model,
+        "signal_date": "2026-06-09",
+        "predictions": [
+            {"symbol": "2330.TW", "name": "台積電", "breakout_probability": 78.5,
+             "tier": "high", "close": 1080, "change_pct": 1.2, "volume": 25000},
+        ],
+    }
+
+
+def get_mock_refresh_tw_data(*, reporter=None) -> dict:
+    """Mock 增量更新：sleep 3 秒分 10 段。"""
+    if reporter is not None:
+        _mock_run_with_progress(reporter, total_seconds=3.0, steps=10, label="抓取交易日資料")
+    return {
+        "dates_attempted": 3, "success": 3, "skipped": 0, "failed": [],
+        "latest_date": "2026-06-09", "bootstrap_required": False,
     }

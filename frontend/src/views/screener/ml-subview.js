@@ -1,22 +1,31 @@
 // 內層 sub-view：ML 預測（動能 / 反轉雙模型）。
+//
+// 訓練與推論皆走 JobStore：任務跟 view 解耦，切走後背景仍續跑，
+// 切回來會接回進度條；同 model 同操作不會重複觸發。
 
 import { View } from '../../core/view.js';
 import { eventBus } from '../../core/event-bus.js';
 import { stripSuffix } from '../../services/ticker-utils.js';
 import { fmtVol, escHtml } from '../../services/formatters.js';
+import { JobProgress } from '../../components/job-progress.js';
 
 const MODEL_LABELS = {
   momentum: { name: '動能延續', probLabel: '動能延續機率', desc: '抓延續段（趨勢中的下一波）' },
   reversal: { name: '起漲',     probLabel: '起漲機率',     desc: '抓糾結後第一根放量 K' },
 };
 
+const trainKey   = (m) => `ml_train:${m}`;
+const predictKey = (m) => `ml_predict:${m}`;
+
+
 export class MLSubView extends View {
-  constructor({ apiClient }) {
+  constructor({ apiClient, jobStore }) {
     super();
     this._api = apiClient;
+    this._jobStore = jobStore;
     this._loaded = false;
-    this._training = false;
     this._model = 'momentum';
+    this._progress = null;
   }
 
   mount(container) {
@@ -32,37 +41,71 @@ export class MLSubView extends View {
 
   invalidate() { this._loaded = false; }
 
+  deactivate() {
+    // 切走 ML sub-tab 時取消當前 predict job（train 留著，使用者可能想等它跑完）。
+    // 切回來時 reload() 若 train 還在跑會接回進度條；predict 則重新觸發。
+    if (this._jobStore?.isActive(predictKey(this._model))) {
+      this._jobStore.cancel(predictKey(this._model));
+    }
+    super.deactivate();
+  }
+
+  unmount() {
+    this._destroyProgress();
+    if (this._jobStore?.isActive(predictKey(this._model))) {
+      this._jobStore.cancel(predictKey(this._model));
+    }
+    super.unmount();
+  }
+
   async reload() {
+    // 捕獲當下 model；任何 await 後若 this._model 已被使用者切換，
+    // 就放棄這次 reload，避免拿 momentum 的 status 卻 submit reversal job 的 race。
+    const model = this._model;
+    const isStale = () => this._model !== model;
+
+    this._destroyProgress();
     const toggle = this._renderToggle();
-    this._content.innerHTML = toggle + '<div class="text-center text-slate-500 text-sm py-8">檢查模型狀態…</div>';
+    this._content.innerHTML = toggle + '<div data-bind="progress"></div><div data-bind="body"><div class="text-center text-slate-500 text-sm py-8">檢查模型狀態…</div></div>';
     this._bindToggle();
+
+    // 若有訓練中的 job，直接接回進度條
+    if (this._jobStore.isActive(trainKey(model))) {
+      this._attachTrainProgress();
+      return;
+    }
+
     try {
-      const status = await this._api.getMLStatus(this._model);
+      const status = await this._api.getMLStatus(model, { signal: this.requestSignal('ml-status') });
+      if (isStale()) return;
       if (!status.trained) {
-        this._content.innerHTML = toggle + this._renderNoModel();
-        this._bindToggle();
+        this._body().innerHTML = this._renderNoModel();
         this._bindTrainButton();
         return;
       }
-      this._content.innerHTML = toggle + '<div class="text-center text-slate-500 text-sm py-8">執行模型推論中…</div>';
-      this._bindToggle();
-      const data = await this._api.getMLPredict(this._model);
-      this._renderResults(data);
-      this._loaded = true;
+
+      // 有模型就觸發推論 job（若同 key 已 active 會自動 dedup）
+      this._body().innerHTML = '<div class="text-center text-slate-500 text-sm py-8">執行模型推論中…</div>';
+      this._attachPredictProgress();
+      await this._jobStore.start(predictKey(model), 'ml_predict', { model });
     } catch (err) {
+      if (err.name === 'AbortError' || isStale()) return;
       console.error('ML load failed:', err);
-      this._content.innerHTML = toggle + `<div class="text-center text-red-400 text-sm py-8">ML 載入失敗：${escHtml(err.message)}</div>`;
-      this._bindToggle();
+      this._body().innerHTML = `<div class="text-center text-red-400 text-sm py-8">ML 載入失敗：${escHtml(err.message)}</div>`;
     }
   }
 
+  _body()    { return this._content.querySelector('[data-bind="body"]'); }
+  _progEl()  { return this._content.querySelector('[data-bind="progress"]'); }
+
   _renderToggle() {
+    const training = this._jobStore.isActive(trainKey(this._model));
     const opts = ['momentum', 'reversal'].map(m => {
       const active = m === this._model;
       const cls = active
         ? 'bg-blue-600 text-white shadow-sm'
         : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200';
-      return `<button data-model="${m}" ${this._training ? 'disabled' : ''}
+      return `<button data-model="${m}" ${training ? 'disabled' : ''}
         class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${cls}">
         ${MODEL_LABELS[m].name}
       </button>`;
@@ -92,7 +135,7 @@ export class MLSubView extends View {
 
   _renderResults(data) {
     const info = data.model_info || {};
-    const picks = data.top_picks || [];
+    const picks = data.top_picks || data.predictions || [];
     const label = MODEL_LABELS[this._model];
     const metrics = info.metrics || {};
 
@@ -135,7 +178,7 @@ export class MLSubView extends View {
     const tableHtml = picks.length ? `
       <div class="flex items-center justify-between mb-2">
         <h3 class="text-xs font-semibold text-slate-400">預測排名 — ${label.probLabel} Top 30</h3>
-        <button data-action="train" ${this._training?'disabled':''}
+        <button data-action="train"
           class="text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1 rounded-lg text-slate-300 transition">
           重新訓練
         </button>
@@ -173,8 +216,7 @@ export class MLSubView extends View {
       </table>
       </div>` : '<div class="text-slate-500 text-sm text-center py-6">無預測結果</div>';
 
-    this._content.innerHTML = this._renderToggle() + infoHtml + fiHtml + tableHtml;
-    this._bindToggle();
+    this._body().innerHTML = infoHtml + fiHtml + tableHtml;
     this._bindTrainButton();
     this._bindRowNavigation();
   }
@@ -182,7 +224,13 @@ export class MLSubView extends View {
   _bindToggle() {
     this._content.querySelectorAll('[data-model]').forEach(btn => {
       btn.addEventListener('click', () => {
-        if (this._training || btn.dataset.model === this._model) return;
+        if (btn.disabled || btn.dataset.model === this._model) return;
+        // 切走前先取消舊 model 還在跑的 predict job，避免後端 thread pool 被堆爆。
+        // train job 通常使用者會等它跑完，這裡不主動取消（要取消有 UI 取消鈕）。
+        const oldModel = this._model;
+        if (this._jobStore.isActive(predictKey(oldModel))) {
+          this._jobStore.cancel(predictKey(oldModel));
+        }
         this._model = btn.dataset.model;
         this._loaded = false;
         this.reload();
@@ -204,31 +252,79 @@ export class MLSubView extends View {
     });
   }
 
-  async _train() {
-    if (this._training) return;
-    this._training = true;
+  _destroyProgress() {
+    if (this._progress) { this._progress.destroy(); this._progress = null; }
+  }
+
+  _attachPredictProgress() {
+    this._destroyProgress();
+    const model = this._model;
+    this._progress = new JobProgress(this._jobStore, predictKey(model), {
+      onDone: (data) => {
+        if (model !== this._model) return;  // 用戶可能已切換 model
+        this._renderResults(data);
+        this._loaded = true;
+      },
+      onError: (err) => {
+        if (model !== this._model) return;
+        this._body().innerHTML = `<div class="text-center text-red-400 text-sm py-8">推論失敗：${escHtml(err)}</div>`;
+      },
+      onCancel: () => {
+        if (model !== this._model) return;
+        this._body().innerHTML = '<div class="text-center text-slate-500 text-sm py-8">已取消</div>';
+      },
+    });
+    this._progEl().innerHTML = '';
+    this._progEl().appendChild(this._progress.el);
+    this._progress.start();
+  }
+
+  _attachTrainProgress() {
+    this._destroyProgress();
     const label = MODEL_LABELS[this._model];
-    this._content.innerHTML = this._renderToggle() + `
-      <div class="text-center py-12">
-        <div class="spin w-10 h-10 rounded-full border-4 border-blue-500 border-t-transparent mx-auto mb-4"></div>
-        <p class="text-slate-400 text-sm">「${label.name}」模型訓練中，請稍候…</p>
-        <p class="text-xs text-slate-600 mt-1">正在計算所有股票的歷史因子並訓練 LightGBM</p>
+    this._body().innerHTML = `
+      <div class="text-center py-6">
+        <p class="text-slate-400 text-sm">「${label.name}」模型訓練中 …</p>
+        <p class="text-xs text-slate-600 mt-1">正在計算歷史因子並訓練 LightGBM</p>
       </div>`;
+    const model = this._model;
+    this._progress = new JobProgress(this._jobStore, trainKey(model), {
+      onDone: () => {
+        if (model !== this._model) return;
+        this._loaded = false;
+        this.reload();
+      },
+      onError: (err) => {
+        if (model !== this._model) return;
+        this._body().innerHTML = `
+          <div class="text-center py-12">
+            <p class="text-red-400 text-sm mb-4">訓練失敗：${escHtml(err)}</p>
+            <button data-action="train" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg text-sm transition-colors">重試</button>
+          </div>`;
+        this._bindTrainButton();
+      },
+      onCancel: () => {
+        if (model !== this._model) return;
+        this._body().innerHTML = `
+          <div class="text-center py-12">
+            <p class="text-slate-500 text-sm mb-4">訓練已取消</p>
+            <button data-action="train" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg text-sm transition-colors">重新訓練</button>
+          </div>`;
+        this._bindTrainButton();
+      },
+    });
+    this._progEl().innerHTML = '';
+    this._progEl().appendChild(this._progress.el);
+    this._progress.start();
+  }
+
+  async _train() {
+    if (this._jobStore.isActive(trainKey(this._model))) return;
+    this._attachTrainProgress();
     try {
-      await this._api.trainML(this._model);
-      this._training = false;
-      this._loaded = false;
-      await this.reload();
-    } catch (err) {
-      this._training = false;
-      console.error('ML training failed:', err);
-      this._content.innerHTML = this._renderToggle() + `
-        <div class="text-center py-12">
-          <p class="text-red-400 text-sm mb-4">訓練失敗：${escHtml(err.message)}</p>
-          <button data-action="train" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg text-sm transition-colors">重試</button>
-        </div>`;
-      this._bindToggle();
-      this._bindTrainButton();
+      await this._jobStore.start(trainKey(this._model), 'ml_train', { model: this._model });
+    } catch {
+      // onError 已處理
     }
   }
 }

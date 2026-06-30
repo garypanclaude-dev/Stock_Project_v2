@@ -15,6 +15,7 @@ load_dotenv()
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 import logging
 
@@ -30,8 +31,10 @@ if not logging.getLogger().handlers:
 from mock_data import (
     get_mock_response, get_mock_batch_quotes, get_mock_chart_data,
     get_mock_peer_comparison, get_mock_watchlist_comparison, get_mock_screener,
-    get_mock_backtest,
+    get_mock_backtest, get_mock_ml_train, get_mock_ml_predict,
+    get_mock_refresh_tw_data,
 )
+from stock_fetcher.job_manager import get_job_manager
 
 logger = logging.getLogger(__name__)
 
@@ -211,18 +214,7 @@ async def get_watchlist_comparison(
         raise HTTPException(status_code=502, detail="Service temporarily unavailable") from exc
 
 
-# ── Refresh TW market data (incremental fetch from latest DB date → today) ────
-@app.post("/api/refresh-tw-data")
-async def refresh_tw_data() -> dict:
-    try:
-        from stock_fetcher.tw_market import run_incremental_update
-        return await asyncio.to_thread(run_incremental_update)
-    except Exception as exc:
-        logger.exception("TW data refresh failed")
-        raise HTTPException(status_code=502, detail="TW data refresh failed") from exc
-
-
-# ── Stock screener ────────────────────────────────────────────────────────────
+# ── Stock screener (短任務，直讀 DB，不走 job) ────────────────────────────────
 @app.get("/api/stock-screener")
 async def get_stock_screener(mock: bool = Query(True)) -> dict:
     if mock:
@@ -234,27 +226,6 @@ async def get_stock_screener(mock: bool = Query(True)) -> dict:
     except Exception as exc:
         logger.exception("Stock screener error")
         raise HTTPException(status_code=502, detail="Service temporarily unavailable") from exc
-
-
-# ── Stock screener backtest ────────────────────────────────────────────────────
-@app.get("/api/stock-screener/backtest")
-async def get_stock_screener_backtest(mock: bool = Query(True)) -> dict:
-    if mock:
-        return get_mock_backtest()
-
-    try:
-        from stock_fetcher.backtester import run_backtest
-        result = await asyncio.to_thread(run_backtest)
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=result["error"])
-        return result
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("Backtest error")
-        raise HTTPException(
-            status_code=502, detail="Backtest service temporarily unavailable"
-        ) from exc
 
 
 # ── Chart only (for period switching — no fundamentals) ──────────────────────
@@ -367,36 +338,83 @@ async def get_ml_status(model: str = Query("momentum")) -> dict:
         raise HTTPException(status_code=502, detail="ML status check failed") from exc
 
 
-@app.post("/api/ml/train")
-async def train_ml_model(model: str = Query("momentum")) -> dict:
-    try:
-        mod = _resolve_ml_module(model)
-        result = await asyncio.to_thread(mod.train_model)
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=result["error"])
-        result["model"] = model
-        return result
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("ML training error")
-        raise HTTPException(status_code=502, detail="ML training failed") from exc
+# ── 重活統一走 Job 系統（POST/GET/DELETE /api/jobs） ─────────────────────────
+
+_JOB_TYPES = ("backtest", "refresh_tw", "ml_train", "ml_predict")
 
 
-@app.get("/api/ml/predict")
-async def get_ml_predictions(model: str = Query("momentum")) -> dict:
-    try:
+class JobSubmitRequest(BaseModel):
+    type: str
+    mock: bool = True
+    params: dict = {}
+
+
+def _build_job_task(job_type: str, params: dict, mock: bool):
+    """Dispatch table：type → (task_key, runnable)。
+
+    runnable 必須接受 reporter kwarg。mock/real 兩條路產出相同 signature 的
+    callable，這樣 JobManager 只需要面對一種協定。
+    """
+    if job_type == "backtest":
+        if mock:
+            return "backtest", lambda *, reporter: get_mock_backtest(reporter=reporter)
+        from stock_fetcher.backtester import run_backtest
+        return "backtest", lambda *, reporter: run_backtest(reporter=reporter)
+
+    if job_type == "refresh_tw":
+        if mock:
+            return "refresh_tw", lambda *, reporter: get_mock_refresh_tw_data(reporter=reporter)
+        from stock_fetcher.tw_market import run_incremental_update
+        return "refresh_tw", lambda *, reporter: run_incremental_update(reporter=reporter)
+
+    if job_type in ("ml_train", "ml_predict"):
+        model = params.get("model", "momentum")
+        if model not in _ML_MODEL_CHOICES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown model '{model}'. Use one of: {', '.join(_ML_MODEL_CHOICES)}",
+            )
+        key = f"{job_type}:{model}"
+        if job_type == "ml_train":
+            if mock:
+                return key, lambda *, reporter: get_mock_ml_train(model, reporter=reporter)
+            mod = _resolve_ml_module(model)
+            return key, lambda *, reporter: mod.train_model(reporter=reporter)
+        # ml_predict
+        if mock:
+            return key, lambda *, reporter: get_mock_ml_predict(model, reporter=reporter)
         mod = _resolve_ml_module(model)
-        result = await asyncio.to_thread(mod.predict_today)
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=result["error"])
-        result["model"] = model
-        return result
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("ML prediction error")
-        raise HTTPException(status_code=502, detail="ML prediction failed") from exc
+        return key, lambda *, reporter: mod.predict_today(reporter=reporter)
+
+    raise HTTPException(status_code=400, detail=f"Unknown job type: {job_type}")
+
+
+@app.post("/api/jobs")
+async def submit_job(req: JobSubmitRequest) -> dict:
+    if req.type not in _JOB_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown job type. Use one of: {', '.join(_JOB_TYPES)}",
+        )
+    key, runnable = _build_job_task(req.type, req.params, req.mock)
+    job = get_job_manager().submit(key, runnable)
+    return job.snapshot()
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job(job_id: str) -> dict:
+    job = get_job_manager().get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found (可能已過期或已被回收)")
+    return job.snapshot(include_result=True)
+
+
+@app.delete("/api/jobs/{job_id}")
+async def cancel_job(job_id: str) -> dict:
+    ok = get_job_manager().cancel(job_id)
+    if not ok:
+        raise HTTPException(status_code=409, detail="Job not cancellable (已結束或不存在)")
+    return {"cancelled": True, "job_id": job_id}
 
 
 _frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")

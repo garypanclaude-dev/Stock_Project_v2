@@ -28,10 +28,11 @@ export class ScreenerResultsSubView extends View {
 
   async reload() {
     try {
-      const data = await this._api.getScreener();
+      const data = await this._api.getScreener({ signal: this.signal() });
       this._render(data);
       this._loaded = true;
     } catch (err) {
+      if (err.name === 'AbortError') return;
       console.warn('Screener failed:', err);
     }
   }

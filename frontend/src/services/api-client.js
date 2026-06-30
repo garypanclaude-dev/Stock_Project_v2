@@ -3,7 +3,8 @@
 // 集中所有 backend endpoint 呼叫，view 不直接 fetch。好處：
 //   - mock 開關集中管理（每次呼叫自動帶 mock 參數）
 //   - 錯誤處理統一（HTTP 非 2xx 時丟 Error）
-//   - 將來要加 retry / cache / abort 都改一個地方
+//   - 短請求支援 AbortSignal（view 切換可中斷）
+//   - 長任務一律走 jobs endpoint（submit/poll/cancel）
 //
 // 透過依賴注入取得 mock 狀態，避免直接耦合 global state（state-store）：
 //   const api = new ApiClient(() => stateStore.isMock);
@@ -13,15 +14,23 @@ export class ApiClient {
     this._getMock = typeof getMockFlag === 'function' ? getMockFlag : () => false;
   }
 
-  async _get(path, params = {}) {
+  async _get(path, params = {}, { signal } = {}) {
     const qs = this._buildQuery({ ...params, mock: this._getMock() });
-    const res = await fetch(`${path}${qs ? '?' + qs : ''}`);
+    const res = await fetch(`${path}${qs ? '?' + qs : ''}`, { signal });
     return this._handle(res);
   }
 
-  async _post(path, params = {}) {
-    const qs = this._buildQuery(params);
-    const res = await fetch(`${path}${qs ? '?' + qs : ''}`, { method: 'POST' });
+  async _postJson(path, body) {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return this._handle(res);
+  }
+
+  async _delete(path) {
+    const res = await fetch(path, { method: 'DELETE' });
     return this._handle(res);
   }
 
@@ -40,20 +49,30 @@ export class ApiClient {
       .join('&');
   }
 
-  // ── 個股 view ──────────────────────────────────────────────────
-  getStockInsights(ticker, period)    { return this._get('/api/stock-insights', { ticker, period }); }
-  getStockChart(ticker, period)       { return this._get('/api/stock-chart', { ticker, period }); }
-  getBatchQuotes(tickers)             { return this._get('/api/batch-quotes', { tickers: tickers.join(',') }); }
-  getPeerComparison(ticker, period)   { return this._get('/api/peer-comparison', { ticker, period }); }
-  getWatchlistComparison(tickers, period) {
-    return this._get('/api/watchlist-comparison', { tickers: tickers.join(','), period });
+  // ── 短請求（可被 AbortSignal 中斷） ────────────────────────────────
+  getStockInsights(ticker, period, opts)    { return this._get('/api/stock-insights', { ticker, period }, opts); }
+  getStockChart(ticker, period, opts)       { return this._get('/api/stock-chart', { ticker, period }, opts); }
+  getBatchQuotes(tickers, opts)             { return this._get('/api/batch-quotes', { tickers: tickers.join(',') }, opts); }
+  getPeerComparison(ticker, period, opts)   { return this._get('/api/peer-comparison', { ticker, period }, opts); }
+  getWatchlistComparison(tickers, period, opts) {
+    return this._get('/api/watchlist-comparison', { tickers: tickers.join(','), period }, opts);
+  }
+  getScreener(opts)                         { return this._get('/api/stock-screener', {}, opts); }
+  getMLStatus(model, opts)                  { return this._get('/api/ml/status', { model }, opts); }
+
+  // ── Job 系統（長任務統一入口） ─────────────────────────────────────
+  // type ∈ "backtest" | "refresh_tw" | "ml_train" | "ml_predict"
+  // 回傳 { job_id, key, status, progress, message, ... }
+  submitJob(type, params = {}) {
+    return this._postJson('/api/jobs', { type, mock: this._getMock(), params });
   }
 
-  // ── 潛力選股 view ───────────────────────────────────────────────
-  getScreener()                       { return this._get('/api/stock-screener'); }
-  refreshTwData()                     { return this._post('/api/refresh-tw-data'); }
-  getBacktest()                       { return this._get('/api/stock-screener/backtest'); }
-  getMLStatus(model)                  { return this._get('/api/ml/status', { model }); }
-  getMLPredict(model)                 { return this._get('/api/ml/predict', { model }); }
-  trainML(model)                      { return this._post('/api/ml/train', { model }); }
+  // 回傳 job snapshot（done 時含 result）
+  getJob(jobId) {
+    return this._get(`/api/jobs/${encodeURIComponent(jobId)}`);
+  }
+
+  cancelJob(jobId) {
+    return this._delete(`/api/jobs/${encodeURIComponent(jobId)}`);
+  }
 }

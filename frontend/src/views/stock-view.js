@@ -126,12 +126,13 @@ export class StockView extends View {
     this._showSection('loading');
 
     try {
-      const data = await this._api.getStockInsights(rawSymbol, stateStore.currentPeriod);
+      const data = await this._api.getStockInsights(rawSymbol, stateStore.currentPeriod, { signal: this.requestSignal('analyze') });
       this._currentData = data;
       this._renderAll(data);
       this._showSection('dashboard');
       this._updateWatchlistQuote(rawSymbol, data);
     } catch (err) {
+      if (err.name === 'AbortError') return;
       this._el['error-msg'].textContent = `Error: ${err.message}`;
       this._showSection('error');
     }
@@ -141,12 +142,13 @@ export class StockView extends View {
     this._el['chart-loading']?.classList.remove('hidden');
     try {
       const ticker = stateStore.currentTicker;
-      const data = await this._api.getStockChart(ticker, stateStore.currentPeriod);
+      const data = await this._api.getStockChart(ticker, stateStore.currentPeriod, { signal: this.requestSignal('chart') });
       this._currentData.kline = data.kline;
       this._currentData.indicators = data.indicators;
       this._currentData.period = data.period;
       this._renderTechnicals(this._currentData);
     } catch (err) {
+      if (err.name === 'AbortError') return;
       console.error('Period switch failed:', err);
     } finally {
       this._el['chart-loading']?.classList.add('hidden');
@@ -398,22 +400,28 @@ export class StockView extends View {
   // ── 同業 / 自選股比較 ─────────────────────────────────────────────
   async _loadPeerComparison() {
     try {
-      const data = await this._api.getPeerComparison(stateStore.currentTicker, stateStore.currentPeriod);
+      const data = await this._api.getPeerComparison(stateStore.currentTicker, stateStore.currentPeriod, { signal: this.requestSignal('peer') });
       this._destroyChart('peerChart');
       this._charts.peerChart = renderRelativePerformance(this._el['peer-chart'], data.relative_performance);
       this._renderComparisonTable(this._el['peer-table'], data.comparison_table);
-    } catch (e) { console.warn('Peer comparison failed:', e); }
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      console.warn('Peer comparison failed:', e);
+    }
   }
 
   async _loadWatchlistComparison() {
     const tickers = this._watchlist.list();
     if (!tickers.length) return;
     try {
-      const data = await this._api.getWatchlistComparison(tickers, stateStore.currentPeriod);
+      const data = await this._api.getWatchlistComparison(tickers, stateStore.currentPeriod, { signal: this.requestSignal('watchlist-cmp') });
       this._destroyChart('wlPerfChart');
       this._charts.wlPerfChart = renderRelativePerformance(this._el['watchlist-perf-chart'], data.relative_performance);
       this._renderComparisonTable(this._el['watchlist-table'], data.comparison_table);
-    } catch (e) { console.warn('Watchlist comparison failed:', e); }
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      console.warn('Watchlist comparison failed:', e);
+    }
   }
 
   _renderComparisonTable(container, rows) {

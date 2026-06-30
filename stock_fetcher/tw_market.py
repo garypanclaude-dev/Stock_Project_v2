@@ -19,6 +19,7 @@ from datetime import datetime, date, timedelta
 import requests
 
 from . import tw_db
+from .cancellation import ProgressReporter
 
 
 # ── Incremental update (shared by CLI and API) ────────────────────────────────
@@ -54,7 +55,7 @@ def _incremental_extended_update(dates: list[date], today: date) -> None:
             pass
 
 
-def run_incremental_update() -> dict:
+def run_incremental_update(*, reporter: ProgressReporter | None = None) -> dict:
     """Fetch trading days from the DB's latest date + 1 up to today.
 
     Designed for non-blocking calls from the web API. Skips weekends/holidays
@@ -71,6 +72,8 @@ def run_incremental_update() -> dict:
       - latest_date       : str | None  newest date in DB after update
       - bootstrap_required: bool   True if DB is empty (refuse to bootstrap)
     """
+    reporter = reporter or ProgressReporter.noop()
+    reporter.update(0, "檢查資料庫最新日期 …")
     today = date.today()
     latest = tw_db.get_latest_date()
 
@@ -91,8 +94,14 @@ def run_incremental_update() -> dict:
     success = 0
     skipped = 0
     failed: list[str] = []
+    total = len(dates)
 
-    for d in dates:
+    for i, d in enumerate(dates):
+        # 每日進度映射到 0~85%（最後 15% 給延伸資料）
+        reporter.update(
+            (i / max(total, 1)) * 85,
+            f"抓取 {d} ({i + 1}/{total})",
+        )
         try:
             result = fetch_for_date(d)
             if not result["trading_day"] or not result["prices"]:
@@ -105,7 +114,9 @@ def run_incremental_update() -> dict:
             failed.append(d.isoformat())
 
     # Extended data: institutional + revenue + TDCC (best-effort)
+    reporter.update(85, "抓取三大法人 / 月營收 / 集保資料 …")
     _incremental_extended_update(dates, today)
+    reporter.update(100, "完成")
 
     return {
         "dates_attempted": len(dates),

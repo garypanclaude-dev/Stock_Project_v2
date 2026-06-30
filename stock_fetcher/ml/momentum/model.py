@@ -20,6 +20,7 @@ from collections import defaultdict
 import numpy as np
 
 from stock_fetcher import tw_db
+from stock_fetcher.cancellation import ProgressReporter
 from stock_fetcher.tw_market import (
     _compute_multi_day_factors,
     _compute_extended_factors,
@@ -253,8 +254,10 @@ def _build_dataset(
     inst_data: dict,
     revenue_data: dict,
     shareholder_data: dict,
+    reporter: ProgressReporter | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build feature matrix, label array (Triple-Barrier binary), and signal-date array."""
+    reporter = reporter or ProgressReporter.noop()
     date_to_idx = {d: i for i, d in enumerate(trading_dates)}
     backtest_dates = trading_dates[WARM_UP_DAYS:]
 
@@ -263,8 +266,16 @@ def _build_dataset(
     sample_dates: list[str] = []
 
     logger.info("ML dataset: building from %d candidate dates …", len(backtest_dates))
+    total_dates = len(backtest_dates)
 
-    for signal_date in backtest_dates:
+    for i, signal_date in enumerate(backtest_dates):
+        # 每個 signal_date 都 check cancel（單一 date 內含千級 symbol 迴圈，可能跑數秒）
+        reporter.check_cancelled()
+        if i % 5 == 0:
+            reporter.update(
+                (i / max(total_dates, 1)) * 100,
+                f"建立樣本中 {i}/{total_dates} ({signal_date})",
+            )
         signal_idx = date_to_idx[signal_date]
         buy_idx = signal_idx + 1
         if buy_idx + MAX_HOLDING_DAYS > len(trading_dates):
@@ -364,7 +375,7 @@ def _fit_calibrator(y_true: np.ndarray, y_prob: np.ndarray):
     return calibrator
 
 
-def train_model() -> dict:
+def train_model(*, reporter: ProgressReporter | None = None) -> dict:
     """Train LightGBM binary classifier with Walk-Forward Expanding + Purge Gap.
 
     1. Build dataset with Triple-Barrier labels.
@@ -375,6 +386,8 @@ def train_model() -> dict:
     """
     from sklearn.metrics import roc_auc_score
 
+    reporter = reporter or ProgressReporter.noop()
+    reporter.update(0, "載入資料 …")
     logger.info("ML train: loading data …")
     (
         trading_dates, prices, companies,
@@ -383,8 +396,10 @@ def train_model() -> dict:
 
     backtest_dates = trading_dates[WARM_UP_DAYS:]
 
+    # 建資料集佔 5~50%
     X, y, dates_arr = _build_dataset(
         trading_dates, prices, inst_data, revenue_data, shareholder_data,
+        reporter=reporter.section(0.05, 0.50),
     )
 
     if len(y) < WF_MIN_TRAIN_SAMPLES:
@@ -406,8 +421,14 @@ def train_model() -> dict:
 
     cursor = MIN_TRAIN_DAYS
     fold_num = 0
+    # 估算總 fold 數，給進度條用
+    est_total_folds = max(1, (n_dates - MIN_TRAIN_DAYS - PURGE_GAP_DAYS) // max(WF_FOLD_DAYS, 1))
 
     while cursor + PURGE_GAP_DAYS < n_dates:
+        reporter.update(
+            50 + (fold_num / est_total_folds) * 40,
+            f"Walk-Forward 第 {fold_num + 1}/{est_total_folds} 折 …",
+        )
         train_cutoff = unique_dates[cursor - 1]
 
         test_start_idx = cursor + PURGE_GAP_DAYS
@@ -512,7 +533,9 @@ def train_model() -> dict:
         )
 
     # ── Final production model: train on ALL data ─────────────────────────
+    reporter.update(92, "訓練最終模型 …")
     final_model = _train_lgbm(X, y)
+    reporter.update(98, "儲存模型 …")
 
     y_pred_all = final_model.predict(X)
     insample_auc = (
@@ -607,12 +630,15 @@ def _assign_tier(probability_pct: float) -> str:
     return "low"
 
 
-def predict_today() -> dict:
+def predict_today(*, reporter: ProgressReporter | None = None) -> dict:
     """Run inference on the latest snapshot using the trained model.
 
     Returns dict with ranked predictions (symbol, name, breakout_probability, tier, ...).
     """
     import lightgbm as lgb
+
+    reporter = reporter or ProgressReporter.noop()
+    reporter.update(0, "載入模型 …")
 
     if not os.path.exists(MODEL_PATH):
         return {"error": "模型尚未訓練，請先點擊「重新訓練」"}
@@ -630,6 +656,7 @@ def predict_today() -> dict:
         calibrator = joblib.load(CALIBRATOR_PATH)
         logger.info("ML predict: calibrator loaded from %s", CALIBRATOR_PATH)
 
+    reporter.update(10, "載入資料 …")
     (
         trading_dates, prices, companies,
         inst_data, revenue_data, shareholder_data,
@@ -640,10 +667,22 @@ def predict_today() -> dict:
 
     latest_date = trading_dates[-1]
     logger.info("ML predict: running inference on %s", latest_date)
+    reporter.update(30, f"對 {latest_date} 推論中 …")
 
     predictions = []
+    total_syms = len(prices)
+    processed = 0
 
     for sym, date_prices in prices.items():
+        processed += 1
+        # 每 10 個 symbol check 一次 cancel，讓 worker 在使用者按取消後能快速釋放
+        if processed % 10 == 0:
+            reporter.check_cancelled()
+        if processed % 50 == 0:
+            reporter.update(
+                30 + (processed / max(total_syms, 1)) * 65,
+                f"推論進度 {processed}/{total_syms}",
+            )
         if sym == BENCHMARK_SYMBOL:
             continue
         if latest_date not in date_prices:
@@ -681,6 +720,7 @@ def predict_today() -> dict:
             "volume": row.get("volume", 0),
         })
 
+    reporter.update(98, "排序結果 …")
     predictions.sort(key=lambda x: x["breakout_probability"], reverse=True)
 
     return {

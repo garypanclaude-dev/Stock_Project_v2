@@ -18,6 +18,8 @@ export class View {
     this.container = null;
     this.mounted = false;
     this.active = false;
+    this._abortCtl = null;
+    this._namedCtls = new Map();   // name → AbortController（同名再呼叫會 abort 前一個）
   }
 
   mount(container) {
@@ -28,14 +30,47 @@ export class View {
   activate(_params = {}) {
     this.active = true;
     if (this.container) this.container.classList.remove('hidden');
+    // 每次 activate 開新的 AbortController，舊請求若還在飛會被切走
+    this._abortCtl = new AbortController();
   }
 
   deactivate() {
     this.active = false;
     if (this.container) this.container.classList.add('hidden');
+    // 切走時 abort 所有掛在此 view 上的短請求（長任務走 JobStore 不受影響）
+    this._abortCtl?.abort();
+    this._abortCtl = null;
+    this._abortNamed();
+  }
+
+  /** view 生命週期級別的 signal — deactivate 時統一 abort。 */
+  signal() {
+    return this._abortCtl?.signal;
+  }
+
+  /**
+   * 「同名請求」signal — 第二次以同 name 呼叫會 abort 前一次。
+   * 解決「同 view 內連按按鈕造成 race」的問題：
+   *   const sig = this.requestSignal('analyze');
+   *   await this._api.getStockInsights(ticker, period, { signal: sig });
+   * deactivate / unmount 時所有 named 也會被 abort。
+   */
+  requestSignal(name) {
+    this._namedCtls.get(name)?.abort();
+    const ctl = new AbortController();
+    this._namedCtls.set(name, ctl);
+    return ctl.signal;
+  }
+
+  _abortNamed() {
+    for (const ctl of this._namedCtls.values()) ctl.abort();
+    this._namedCtls.clear();
   }
 
   unmount() {
+    this._abortCtl?.abort();
+    this._abortCtl = null;
+    this._abortNamed();
     if (this.container) this.container.innerHTML = '';
     this.mounted = false;
   }

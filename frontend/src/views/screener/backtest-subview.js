@@ -3,18 +3,24 @@
 import { View } from '../../core/view.js';
 import { stripSuffix } from '../../services/ticker-utils.js';
 import { renderBacktestRankChart } from '../../components/charts/backtest-rank-chart.js';
+import { JobProgress } from '../../components/job-progress.js';
+
+const JOB_KEY = 'backtest';
 
 export class BacktestSubView extends View {
-  constructor({ apiClient }) {
+  constructor({ apiClient, jobStore }) {
     super();
     this._api = apiClient;
+    this._jobStore = jobStore;
     this._loaded = false;
     this._rankChart = null;
+    this._progress = null;
   }
 
   mount(container) {
     super.mount(container);
     container.innerHTML = `
+      <div data-bind="progress"></div>
       <div data-bind="summary" class="mb-4"></div>
       <div data-bind="horizon" class="mb-4"></div>
       <div class="bg-slate-900/50 rounded-xl p-4 mb-4">
@@ -44,22 +50,48 @@ export class BacktestSubView extends View {
 
   unmount() {
     if (this._rankChart) { this._rankChart.destroy(); this._rankChart = null; }
+    if (this._progress) { this._progress.destroy(); this._progress = null; }
     super.unmount();
   }
 
   async reload() {
-    this._el.summary.innerHTML = '<div class="text-center text-slate-500 text-sm py-8">載入回測資料中…</div>';
-    try {
-      const data = await this._api.getBacktest();
-      this._renderSummary(data.summary, data.period, data.config);
-      this._renderHorizon(data.summary.by_horizon, data.config.forward_days);
-      this._renderRankChart(data.summary.by_rank_group, data.config.forward_days);
-      this._renderSignals(data.signals);
-      this._loaded = true;
-    } catch (err) {
-      console.error('Backtest load failed:', err);
-      this._el.summary.innerHTML = '<div class="text-center text-red-400 text-sm py-8">回測資料載入失敗</div>';
+    // 若已有同 key 進行中（例如使用者切到別的 tab 又切回來），直接接回進度條
+    if (this._jobStore.isActive(JOB_KEY)) {
+      this._attachProgress();
+      return;
     }
+
+    this._el.summary.innerHTML = '<div class="text-center text-slate-500 text-sm py-8">提交回測任務 …</div>';
+    this._attachProgress();
+    try {
+      await this._jobStore.start(JOB_KEY, 'backtest');
+    } catch {
+      // error 由 progress.onError 處理
+    }
+  }
+
+  _attachProgress() {
+    this._progress?.destroy();
+    this._progress = new JobProgress(this._jobStore, JOB_KEY, {
+      onDone: (data) => {
+        if (!data) return;
+        this._renderSummary(data.summary, data.period, data.config);
+        this._renderHorizon(data.summary.by_horizon, data.config.forward_days);
+        this._renderRankChart(data.summary.by_rank_group, data.config.forward_days);
+        this._renderSignals(data.signals);
+        this._loaded = true;
+      },
+      onError: (err) => {
+        console.error('Backtest load failed:', err);
+        this._el.summary.innerHTML = `<div class="text-center text-red-400 text-sm py-8">回測失敗：${err}</div>`;
+      },
+      onCancel: () => {
+        this._el.summary.innerHTML = '<div class="text-center text-slate-500 text-sm py-8">已取消</div>';
+      },
+    });
+    this._el.progress.innerHTML = '';
+    this._el.progress.appendChild(this._progress.el);
+    this._progress.start();
   }
 
   _renderSummary(summary, period, config) {

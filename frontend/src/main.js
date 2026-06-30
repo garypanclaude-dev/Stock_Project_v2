@@ -9,6 +9,7 @@ import { eventBus } from './core/event-bus.js';
 
 import { stateStore } from './services/state-store.js';
 import { ApiClient } from './services/api-client.js';
+import { JobStore } from './services/job-store.js';
 import { WatchlistStore } from './services/watchlist-store.js';
 
 import { Header } from './components/header.js';
@@ -20,6 +21,7 @@ import { PlaceholderView } from './views/placeholder-view.js';
 
 // ── 依賴注入 ─────────────────────────────────────────────────────────
 const apiClient = new ApiClient(() => stateStore.isMock);
+const jobStore = new JobStore(apiClient);
 const watchlistStore = new WatchlistStore();
 
 // ── Components ─────────────────────────────────────────────────────
@@ -29,7 +31,7 @@ const sidebar = new SidebarWatchlist({ watchlistStore, apiClient });
 // ── Views ──────────────────────────────────────────────────────────
 const views = {
   'stock':              new StockView({ apiClient, watchlistStore }),
-  'screener':           new ScreenerView({ apiClient }),
+  'screener':           new ScreenerView({ apiClient, jobStore }),
   'strategy-backtest':  new PlaceholderView({ title: '策略回測', description: '輸入買賣訊號規則，回測歷史報酬與風險指標。' }),
   'sector-heatmap':     new PlaceholderView({ title: '產業熱度',  description: '各產業 / 主題類股的資金流向、漲跌幅熱力圖。' }),
   'etf-compare':        new PlaceholderView({ title: 'ETF 比較',  description: '同類 ETF 績效、費用率、追蹤誤差、持股重疊度比較。' }),

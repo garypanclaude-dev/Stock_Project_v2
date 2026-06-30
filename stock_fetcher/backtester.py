@@ -28,6 +28,7 @@ from .backtest_config import (
     WARM_UP_DAYS,
     BENCHMARK_SYMBOL,
 )
+from .cancellation import ProgressReporter
 
 logger = logging.getLogger(__name__)
 
@@ -39,16 +40,20 @@ RANK_GROUPS = [(1, 5), (6, 10), (11, 15), (16, 20)]
 def run_backtest(
     top_n: int = TOP_N,
     forward_days: list[int] | None = None,
+    *,
+    reporter: ProgressReporter | None = None,
 ) -> dict:
     """Run forward-return backtest and return structured results.
 
     Returns dict with keys: period, config, summary, signals.
     On error returns dict with "error" key.
     """
+    reporter = reporter or ProgressReporter.noop()
     if forward_days is None:
         forward_days = list(FORWARD_DAYS)
 
     # ── 1. Load all data into memory ─────────────────────────────────────────
+    reporter.update(0, "載入交易日資料 …")
     logger.info("Backtest: loading data from DB …")
     trading_dates = tw_db.get_trading_dates()
     min_required = WARM_UP_DAYS + max(forward_days) + 5
@@ -60,13 +65,16 @@ def run_backtest(
             )
         }
 
+    reporter.update(2, "載入價量資料 …")
     prices, _ = _load_prices_into_memory()
+    reporter.update(5, "載入基本資料 …")
     companies = tw_db.get_all_companies()
     inst_data, revenue_data, shareholder_data = _load_extended_data()
     date_to_idx = {d: i for i, d in enumerate(trading_dates)}
 
     backtest_dates = trading_dates[WARM_UP_DAYS:]
     max_fwd = max(forward_days)
+    reporter.update(8, f"準備回測 {len(backtest_dates)} 個交易日 …")
 
     logger.info(
         "Backtest: %d trading days loaded, %d stocks, "
@@ -79,7 +87,14 @@ def run_backtest(
     signals: list[dict] = []
     screener_cache: dict[str, list[dict]] = {}
 
-    for signal_date in backtest_dates:
+    total = len(backtest_dates)
+    # 主迴圈映射到 10~95%（前 10% 留給載入、最後 5% 留給 summary）
+    for i, signal_date in enumerate(backtest_dates):
+        # 每個 date 都 check cancel — 單一 date 內含全 symbol 迴圈，可能跑幾秒
+        reporter.check_cancelled()
+        if i % 5 == 0:
+            pct = 10 + (i / max(total, 1)) * 85
+            reporter.update(pct, f"回測進度 {i}/{total} ({signal_date})")
         signal_idx = date_to_idx[signal_date]
         buy_idx = signal_idx + 1
         if buy_idx >= len(trading_dates):
@@ -156,7 +171,9 @@ def run_backtest(
             })
 
     # ── 3. Compute summary ───────────────────────────────────────────────────
+    reporter.update(95, "計算統計摘要 …")
     summary = _compute_summary(signals, forward_days)
+    reporter.update(100, "完成")
 
     logger.info(
         "Backtest complete: %d signals across %d trading days",
