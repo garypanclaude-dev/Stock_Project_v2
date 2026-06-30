@@ -666,7 +666,9 @@ def predict_today(*, reporter: ProgressReporter | None = None) -> dict:
     logger.info("ML predict: running inference on %s", latest_date)
     reporter.update(30, f"對 {latest_date} 推論中 …")
 
-    predictions = []
+    # ── Phase 1: 抽特徵（不預測） ──────────────────────────────────────────
+    feature_rows: list[list[float | None]] = []
+    meta_rows: list[dict] = []
     total_syms = len(prices)
     processed = 0
 
@@ -676,8 +678,8 @@ def predict_today(*, reporter: ProgressReporter | None = None) -> dict:
             reporter.check_cancelled()
         if processed % 50 == 0:
             reporter.update(
-                30 + (processed / max(total_syms, 1)) * 65,
-                f"推論進度 {processed}/{total_syms}",
+                30 + (processed / max(total_syms, 1)) * 60,
+                f"抽特徵 {processed}/{total_syms}",
             )
         if sym == BENCHMARK_SYMBOL:
             continue
@@ -697,24 +699,32 @@ def predict_today(*, reporter: ProgressReporter | None = None) -> dict:
             inst_data=inst_data, revenue_data=revenue_data,
             shareholder_data=shareholder_data,
         )
-        features = _extract_features(enriched)
-
-        X = np.array([features], dtype=np.float64)
-        raw_prob = float(model.predict(X)[0])
-        if calibrator is not None:
-            raw_prob = float(calibrator.predict(np.array([raw_prob]))[0])
-        prob_pct = raw_prob * 100
-
+        feature_rows.append(_extract_features(enriched))
         company = companies.get(sym, {})
-        predictions.append({
+        meta_rows.append({
             "symbol": sym,
             "name": company.get("name", ""),
-            "breakout_probability": round(prob_pct, 1),
-            "tier": _assign_tier(prob_pct),
             "close": row.get("close", 0),
             "change_pct": row.get("change_pct", 0),
             "volume": row.get("volume", 0),
         })
+
+    # ── Phase 2: 一次性批次推論 ────────────────────────────────────────────
+    reporter.update(92, "批次推論中 …")
+    predictions: list[dict] = []
+    if feature_rows:
+        X_all = np.array(feature_rows, dtype=np.float64)
+        raw_probs = model.predict(X_all)
+        if calibrator is not None:
+            raw_probs = calibrator.predict(raw_probs)
+
+        for row_meta, raw_prob in zip(meta_rows, raw_probs):
+            prob_pct = float(raw_prob) * 100
+            predictions.append({
+                **row_meta,
+                "breakout_probability": round(prob_pct, 1),
+                "tier": _assign_tier(prob_pct),
+            })
 
     reporter.update(98, "排序結果 …")
     predictions.sort(key=lambda x: x["breakout_probability"], reverse=True)
