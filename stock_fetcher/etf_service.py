@@ -426,13 +426,26 @@ def simulate_dca(
     回傳 {target, benchmark} 兩份結果。
     """
     sync_etf(symbol)
-    target_result = _simulate_one(symbol, monthly_amount, start_date, end_date, drip)
+
+    # 對齊起始日：取 target 與 benchmark 兩者共同可用的最早交易日，
+    # 避免掛牌日不同造成累積投入本金與複利期間不對等的假象。
+    aligned_start = start_date
+    if benchmark and benchmark != symbol:
+        try:
+            sync_etf(benchmark)
+            tgt_prices = etf_db.get_prices(symbol, start_date, end_date)
+            bch_prices = etf_db.get_prices(benchmark, start_date, end_date)
+            if tgt_prices and bch_prices:
+                aligned_start = max(tgt_prices[0]["date"], bch_prices[0]["date"], start_date)
+        except Exception as e:
+            logger.warning("align start_date failed, fallback to raw: %s", e)
+
+    target_result = _simulate_one(symbol, monthly_amount, aligned_start, end_date, drip)
 
     benchmark_result = None
     if benchmark and benchmark != symbol:
         try:
-            sync_etf(benchmark)
-            benchmark_result = _simulate_one(benchmark, monthly_amount, start_date, end_date, drip)
+            benchmark_result = _simulate_one(benchmark, monthly_amount, aligned_start, end_date, drip)
         except Exception as e:
             logger.warning("benchmark sim failed: %s", e)
 
