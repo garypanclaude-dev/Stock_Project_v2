@@ -114,6 +114,23 @@ def init_db() -> None:
                     snapshot_at     TEXT NOT NULL,
                     PRIMARY KEY (symbol, sector)
                 );
+
+                -- 稽核用：記錄哪些 ETF 在哪段歷史套用過手動調整（如分割回填）
+                CREATE TABLE IF NOT EXISTS etf_split_adjustments (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol              TEXT NOT NULL,
+                    split_date          TEXT NOT NULL,         -- 真實分割發生日
+                    factor              REAL NOT NULL,          -- 1:4 → 4
+                    adjustment_type     TEXT NOT NULL,          -- split / reverse_split / manual_backfill
+                    date_range_start    TEXT,                   -- 套用範圍起 (NULL = 不限)
+                    date_range_end      TEXT,                   -- 套用範圍迄
+                    rows_affected       INTEGER,
+                    applied_at          TEXT NOT NULL,
+                    note                TEXT,
+                    UNIQUE(symbol, split_date, date_range_start, date_range_end)
+                );
+                CREATE INDEX IF NOT EXISTS idx_split_adj_symbol
+                    ON etf_split_adjustments(symbol);
                 """
             )
             logger.info("ETF SQLite DB initialized at %s", DB_PATH)
@@ -334,6 +351,82 @@ def get_sectors(symbol: str) -> list[dict]:
             (symbol,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+# ── etf_split_adjustments（稽核） ─────────────────────────────────────────────
+
+def apply_price_factor(
+    symbol: str,
+    factor: float,
+    date_range_start: str | None,
+    date_range_end: str | None,
+) -> int:
+    """
+    對 etf_price_daily 中指定 symbol + 日期區間直接覆寫：
+      open/high/low/close/adj_close ÷ factor
+      volume × factor
+    回傳影響筆數。注意：此函式不做稽核紀錄，呼叫方需自行 insert_split_adjustment。
+    """
+    init_db()
+    conditions = ["symbol = ?"]
+    args: list = [symbol]
+    if date_range_start:
+        conditions.append("date >= ?")
+        args.append(date_range_start)
+    if date_range_end:
+        conditions.append("date <= ?")
+        args.append(date_range_end)
+    where = " AND ".join(conditions)
+
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"""
+            UPDATE etf_price_daily
+               SET open      = open      / ?,
+                   high      = high      / ?,
+                   low       = low       / ?,
+                   close     = close     / ?,
+                   adj_close = adj_close / ?,
+                   volume    = CAST(volume * ? AS INTEGER)
+             WHERE {where}
+            """,
+            [factor, factor, factor, factor, factor, factor, *args],
+        )
+        return cur.rowcount
+
+
+def insert_split_adjustment(row: dict) -> bool:
+    """
+    寫入稽核紀錄。idempotent：若 (symbol, split_date, range_start, range_end) 已存在則跳過。
+    回傳 True = 新增；False = 已存在跳過。
+    """
+    init_db()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO etf_split_adjustments (
+                symbol, split_date, factor, adjustment_type,
+                date_range_start, date_range_end, rows_affected, applied_at, note
+            ) VALUES (
+                :symbol, :split_date, :factor, :adjustment_type,
+                :date_range_start, :date_range_end, :rows_affected, :applied_at, :note
+            )
+            """,
+            row,
+        )
+        return cur.rowcount > 0
+
+
+def list_split_adjustments(symbol: str | None = None) -> list[dict]:
+    init_db()
+    sql = "SELECT * FROM etf_split_adjustments"
+    args: list = []
+    if symbol:
+        sql += " WHERE symbol = ?"
+        args.append(symbol)
+    sql += " ORDER BY applied_at DESC"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, args).fetchall()]
 
 
 if __name__ == "__main__":
