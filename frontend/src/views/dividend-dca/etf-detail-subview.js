@@ -24,8 +24,12 @@ export class EtfDetailSubView extends View {
     this._api = apiClient;
     this._parent = parent;
     this._symbol = null;
-    this._loaded = false;
+    this._data = null;      // 單一真實來源；有值代表 symbol 對應的資料已抓齊
     this._charts = {};
+  }
+
+  _hasCharts() {
+    return Object.keys(this._charts).length > 0;
   }
 
   mount(container) {
@@ -56,10 +60,15 @@ export class EtfDetailSubView extends View {
       this._el.content.innerHTML = '<div class="text-slate-500 text-center py-10">請從列表選一檔 ETF</div>';
       return;
     }
-    if (symbol !== this._symbol || !this._loaded) {
+    // 換股 → 清快取後重抓；同股但畫面被 deactivate 銷毀 → 用快取重繪；否則不動。
+    if (symbol !== this._symbol) {
       this._symbol = symbol;
-      this._loaded = false;
+      this._data = null;
       await this.reload();
+    } else if (!this._data) {
+      await this.reload();
+    } else if (!this._hasCharts()) {
+      this._render(this._data);
     }
   }
 
@@ -74,12 +83,13 @@ export class EtfDetailSubView extends View {
   }
 
   async reload() {
+    this._data = null;
     this._destroyCharts();
     this._el.content.innerHTML = '<div class="text-slate-500 text-sm text-center py-10">載入中…</div>';
     this._parent.setStatus('載入詳情中…');
     try {
       const data = await this._api.getEtfDetail(this._symbol, { signal: this.signal() });
-      this._loaded = true;
+      this._data = data;
       this._parent.setStatus('');
       this._render(data);
     } catch (err) {
@@ -89,7 +99,9 @@ export class EtfDetailSubView extends View {
     }
   }
 
+  // 冪等：呼叫端不必先清 charts，_render 自己保證畫面對應到傳入的 data。
   _render(d) {
+    this._destroyCharts();
     const m = d.meta || {};
     const sym = stripSuffix(m.symbol || this._symbol);
     const isActive = !!m.is_active;
